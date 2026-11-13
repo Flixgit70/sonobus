@@ -518,6 +518,12 @@ Image detail::WindowingHelpers::createIconForFile (const File& file)
 
 static Image createNSWindowSnapshot (NSWindow* nsWindow)
 {
+#if defined (MAC_OS_VERSION_15_0) && MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_VERSION_15_0
+    // JUCE 6's CoreGraphics snapshot API is unavailable in the macOS 15 SDK.
+    // Screen snapshots are not needed for the SonoBus standalone UI.
+    ignoreUnused (nsWindow);
+    return {};
+#else
     JUCE_AUTORELEASEPOOL
     {
         // CGWindowListCreateImage is replaced by functions in the ScreenCaptureKit framework, but
@@ -552,6 +558,7 @@ static Image createNSWindowSnapshot (NSWindow* nsWindow)
 
         return result;
     }
+#endif
 }
 
 Image createSnapshotOfNativeWindow (void* nativeWindowHandle)

@@ -1,0 +1,33 @@
+name: Beta release Windows VST3
+
+on:
+  push:
+    tags:
+      - 'v*-beta*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows-vst3:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure x64 build
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DUniversalBinary=OFF
+
+      - name: Build VST3
+        run: cmake --build build --config Release --target SonoBus_VST3 --parallel 4
+
+      - name: Package VST3
+        shell: pwsh
+        run: Compress-Archive -Path build/SonoBus_artefacts/Release/VST3/SonoBus.vst3 -DestinationPath SonoBus-Windows-x64-VST3.zip -Force
+
+      - name: Attach Windows VST3 to beta release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SonoBus-Windows-x64-VST3.zip
+          prerelease: true
+          fail_on_unmatched_files: true

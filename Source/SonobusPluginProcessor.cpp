@@ -59,6 +59,7 @@ String SonobusAudioProcessor::paramMetEnabled ("metenabled");
 String SonobusAudioProcessor::paramMetGain     ("metgain");
 String SonobusAudioProcessor::paramMetTempo     ("mettempo");
 String SonobusAudioProcessor::paramSendChannels    ("sendchannels");
+String SonobusAudioProcessor::paramPatchbaySendChannelCount ("patchbaysendchannels");
 String SonobusAudioProcessor::paramSendMetAudio    ("sendmetaudio");
 String SonobusAudioProcessor::paramSendFileAudio    ("sendfileaudio");
 String SonobusAudioProcessor::paramSendSoundboardAudio    ("sendsoundboardaudio");
@@ -82,6 +83,13 @@ String SonobusAudioProcessor::paramInputReverbPreDelay  ("inreverbpredelay");
 
 static String recentsCollectionKey("RecentConnections");
 static String recentsItemKey("ServerConnectionInfo");
+
+static int sendChannelCountForMode(int sendMode, int activeChannels, int patchbayChannelCount = 0)
+{
+    if (patchbayChannelCount > 0)
+        return jlimit(1, MAX_CHANNELS, patchbayChannelCount);
+    return sendMode == 3 ? MAX_CHANNELS : sendMode <= 0 ? activeChannels : sendMode;
+}
 
 static String extraStateCollectionKey("ExtraState");
 static String useSpecificUdpPortKey("UseUdpPort");
@@ -629,7 +637,8 @@ mState (*this, &mUndoManager, "SonoBusAoO",
     std::make_unique<AudioParameterFloat>(ParameterID(paramDefaultNetbufMs, 1),     TRANS ("Default Jitter Buffer Time"),    NormalisableRange<float>(0.0, mMaxBufferTime.get(), 0.001, 0.5), mBufferTime.get(), "", AudioProcessorParameter::genericParameter,
                                           [](float v, int maxlen) -> String { return String(v*1000.0) + " ms"; }, 
                                           [](const String& s) -> float { return s.getFloatValue()*1e-3f; }),
-    std::make_unique<AudioParameterChoice>(ParameterID(paramSendChannels, 1), TRANS ("Send Channels"), StringArray({ "Match # Inputs", "Send Mono", "Send Stereo"}), JUCEApplicationBase::isStandaloneApp() ? mSendChannels.get() : 0),
+    std::make_unique<AudioParameterChoice>(ParameterID(paramSendChannels, 1), TRANS ("Send Channels"), StringArray({ "Match # Inputs", "Send Mono", "Send Stereo", "Send 64 Channels"}), JUCEApplicationBase::isStandaloneApp() ? mSendChannels.get() : 0),
+    std::make_unique<AudioParameterInt>(ParameterID(paramPatchbaySendChannelCount, 1), TRANS ("Patchbay Send Channels"), 0, MAX_CHANNELS, 0),
 
     std::make_unique<AudioParameterBool>(ParameterID(paramMetEnabled, 1), TRANS ("Metronome Enabled"), mMetEnabled.get()),
     std::make_unique<AudioParameterBool>(ParameterID(paramSendMetAudio, 1), TRANS ("Send Metronome Audio"), mSendMet.get()),
@@ -691,6 +700,21 @@ mState (*this, &mUndoManager, "SonoBusAoO",
 
 })
 {
+    for (int channel = 0; channel < MAX_CHANNELS; ++channel) {
+        mPatchbaySendInputGains[channel].store(1.0f, std::memory_order_relaxed);
+        mPatchbaySendOutputGains[channel].store(1.0f, std::memory_order_relaxed);
+        mPatchbayReceiveOutputGains[channel].store(1.0f, std::memory_order_relaxed);
+        for (int stream = 0; stream < MAX_CHANNELS; ++stream)
+            mPatchbaySendRouteGains[channel][stream].store(1.0f, std::memory_order_relaxed);
+    }
+    for (int peer = 0; peer < MAX_PEERS; ++peer) {
+        for (int stream = 0; stream < MAX_CHANNELS; ++stream) {
+            mPatchbayReceiveInputGains[peer][stream].store(1.0f, std::memory_order_relaxed);
+            for (int output = 0; output < MAX_CHANNELS; ++output)
+                mPatchbayReceiveRouteGains[peer][stream][output].store(1.0f, std::memory_order_relaxed);
+        }
+    }
+
     mState.addParameterListener (paramInGain, this);
     mState.addParameterListener (paramDry, this);
     mState.addParameterListener (paramWet, this);
@@ -717,6 +741,7 @@ mState (*this, &mUndoManager, "SonoBusAoO",
     mState.addParameterListener (paramMainReverbPreDelay, this);
     mState.addParameterListener (paramMainReverbModel, this);
     mState.addParameterListener (paramSendChannels, this);
+    mState.addParameterListener (paramPatchbaySendChannelCount, this);
     mState.addParameterListener (paramDynamicResampling, this);
     mState.addParameterListener (paramAutoReconnectLast, this);
     mState.addParameterListener (paramMainInMute, this);
@@ -4574,9 +4599,184 @@ void SonobusAudioProcessor::setPatchMatrixValue(int srcindex, int destindex, boo
     }
 }
 
+bool SonobusAudioProcessor::getPatchbaySendRoute(int inputChannel, int streamChannel) const
+{
+    if (inputChannel < 0 || inputChannel >= MAX_CHANNELS || streamChannel < 0 || streamChannel >= MAX_CHANNELS)
+        return false;
+    return mPatchbaySendRoutes[inputChannel][streamChannel].load(std::memory_order_relaxed);
+}
+
+void SonobusAudioProcessor::setPatchbaySendRoute(int inputChannel, int streamChannel, bool enabled)
+{
+    if (inputChannel < 0 || inputChannel >= MAX_CHANNELS || streamChannel < 0 || streamChannel >= MAX_CHANNELS)
+        return;
+    mPatchbaySendRoutesCustomized.store(true, std::memory_order_relaxed);
+    mPatchbaySendRoutes[inputChannel][streamChannel].store(enabled, std::memory_order_relaxed);
+}
+
+bool SonobusAudioProcessor::getPatchbayReceiveRoute(int peerIndex, int streamChannel, int outputChannel) const
+{
+    if (peerIndex < 0 || peerIndex >= MAX_PEERS || streamChannel < 0 || streamChannel >= MAX_CHANNELS
+        || outputChannel < 0 || outputChannel >= MAX_CHANNELS)
+        return false;
+    return mPatchbayReceiveRoutes[peerIndex][streamChannel][outputChannel].load(std::memory_order_relaxed);
+}
+
+void SonobusAudioProcessor::setPatchbayReceiveRoute(int peerIndex, int streamChannel, int outputChannel, bool enabled)
+{
+    if (peerIndex < 0 || peerIndex >= MAX_PEERS || streamChannel < 0 || streamChannel >= MAX_CHANNELS
+        || outputChannel < 0 || outputChannel >= MAX_CHANNELS)
+        return;
+    mPatchbayReceiveRoutes[peerIndex][streamChannel][outputChannel].store(enabled, std::memory_order_relaxed);
+    mPatchbayReceiveRoutesInitialized[peerIndex].store(true, std::memory_order_relaxed);
+}
+
+static float clampPatchbayGain(float gain)
+{
+    return jlimit(0.001f, Decibels::decibelsToGain(12.0f), gain);
+}
+
+float SonobusAudioProcessor::getPatchbaySendInputGain(int channel) const
+{
+    return channel >= 0 && channel < MAX_CHANNELS ? mPatchbaySendInputGains[channel].load(std::memory_order_relaxed) : 1.0f;
+}
+
+void SonobusAudioProcessor::setPatchbaySendInputGain(int channel, float gain)
+{
+    if (channel >= 0 && channel < MAX_CHANNELS) mPatchbaySendInputGains[channel].store(clampPatchbayGain(gain), std::memory_order_relaxed);
+}
+
+float SonobusAudioProcessor::getPatchbaySendOutputGain(int channel) const
+{
+    return channel >= 0 && channel < MAX_CHANNELS ? mPatchbaySendOutputGains[channel].load(std::memory_order_relaxed) : 1.0f;
+}
+
+void SonobusAudioProcessor::setPatchbaySendOutputGain(int channel, float gain)
+{
+    if (channel >= 0 && channel < MAX_CHANNELS) mPatchbaySendOutputGains[channel].store(clampPatchbayGain(gain), std::memory_order_relaxed);
+}
+
+float SonobusAudioProcessor::getPatchbaySendRouteGain(int input, int stream) const
+{
+    return input >= 0 && input < MAX_CHANNELS && stream >= 0 && stream < MAX_CHANNELS
+        ? mPatchbaySendRouteGains[input][stream].load(std::memory_order_relaxed) : 1.0f;
+}
+
+void SonobusAudioProcessor::setPatchbaySendRouteGain(int input, int stream, float gain)
+{
+    if (input >= 0 && input < MAX_CHANNELS && stream >= 0 && stream < MAX_CHANNELS)
+        mPatchbaySendRouteGains[input][stream].store(clampPatchbayGain(gain), std::memory_order_relaxed);
+}
+
+float SonobusAudioProcessor::getPatchbayReceiveInputGain(int peer, int stream) const
+{
+    return peer >= 0 && peer < MAX_PEERS && stream >= 0 && stream < MAX_CHANNELS
+        ? mPatchbayReceiveInputGains[peer][stream].load(std::memory_order_relaxed) : 1.0f;
+}
+
+void SonobusAudioProcessor::setPatchbayReceiveInputGain(int peer, int stream, float gain)
+{
+    if (peer >= 0 && peer < MAX_PEERS && stream >= 0 && stream < MAX_CHANNELS)
+        mPatchbayReceiveInputGains[peer][stream].store(clampPatchbayGain(gain), std::memory_order_relaxed);
+}
+
+float SonobusAudioProcessor::getPatchbayReceiveOutputGain(int channel) const
+{
+    return channel >= 0 && channel < MAX_CHANNELS ? mPatchbayReceiveOutputGains[channel].load(std::memory_order_relaxed) : 1.0f;
+}
+
+void SonobusAudioProcessor::setPatchbayReceiveOutputGain(int channel, float gain)
+{
+    if (channel >= 0 && channel < MAX_CHANNELS) mPatchbayReceiveOutputGains[channel].store(clampPatchbayGain(gain), std::memory_order_relaxed);
+}
+
+float SonobusAudioProcessor::getPatchbayReceiveRouteGain(int peer, int stream, int output) const
+{
+    return peer >= 0 && peer < MAX_PEERS && stream >= 0 && stream < MAX_CHANNELS && output >= 0 && output < MAX_CHANNELS
+        ? mPatchbayReceiveRouteGains[peer][stream][output].load(std::memory_order_relaxed) : 1.0f;
+}
+
+void SonobusAudioProcessor::setPatchbayReceiveRouteGain(int peer, int stream, int output, float gain)
+{
+    if (peer >= 0 && peer < MAX_PEERS && stream >= 0 && stream < MAX_CHANNELS && output >= 0 && output < MAX_CHANNELS)
+        mPatchbayReceiveRouteGains[peer][stream][output].store(clampPatchbayGain(gain), std::memory_order_relaxed);
+}
+
+void SonobusAudioProcessor::clearPatchbayRoutes()
+{
+    mPatchbaySendRoutesCustomized.store(true, std::memory_order_relaxed);
+    for (int input = 0; input < MAX_CHANNELS; ++input)
+        for (int stream = 0; stream < MAX_CHANNELS; ++stream)
+            mPatchbaySendRoutes[input][stream].store(false, std::memory_order_relaxed);
+
+    for (int peer = 0; peer < MAX_PEERS; ++peer) {
+        for (int stream = 0; stream < MAX_CHANNELS; ++stream)
+            for (int output = 0; output < MAX_CHANNELS; ++output)
+                mPatchbayReceiveRoutes[peer][stream][output].store(false, std::memory_order_relaxed);
+        mPatchbayReceiveRoutesInitialized[peer].store(true, std::memory_order_relaxed);
+    }
+}
+
+int SonobusAudioProcessor::getPatchbaySendChannelCount() const
+{
+    const int count = sendChannelCountForMode(mSendChannels.get(), mActiveSendChannels, mPatchbaySendChannelCount.get());
+    return jlimit(1, MAX_CHANNELS, count);
+}
+
 
 void SonobusAudioProcessor::adjustRemoteSendMatrix(int index, bool removed)
 {
+    const int peerCount = jmin(MAX_PEERS, mRemotePeers.size());
+    auto shiftReceiveRoutes = [&](bool remove) {
+        if (remove) {
+            for (int peer = index; peer < peerCount - 1; ++peer) {
+                mPatchbayReceiveRoutesInitialized[peer].store(mPatchbayReceiveRoutesInitialized[peer + 1].load(std::memory_order_relaxed), std::memory_order_relaxed);
+                for (int stream = 0; stream < MAX_CHANNELS; ++stream)
+                {
+                    mPatchbayReceiveInputGains[peer][stream].store(mPatchbayReceiveInputGains[peer + 1][stream].load(std::memory_order_relaxed), std::memory_order_relaxed);
+                    for (int output = 0; output < MAX_CHANNELS; ++output) {
+                        mPatchbayReceiveRoutes[peer][stream][output].store(mPatchbayReceiveRoutes[peer + 1][stream][output].load(std::memory_order_relaxed), std::memory_order_relaxed);
+                        mPatchbayReceiveRouteGains[peer][stream][output].store(mPatchbayReceiveRouteGains[peer + 1][stream][output].load(std::memory_order_relaxed), std::memory_order_relaxed);
+                    }
+                }
+            }
+            const int last = peerCount - 1;
+            if (last >= 0 && last < MAX_PEERS) {
+                mPatchbayReceiveRoutesInitialized[last].store(false, std::memory_order_relaxed);
+                for (int stream = 0; stream < MAX_CHANNELS; ++stream) {
+                    mPatchbayReceiveInputGains[last][stream].store(1.0f, std::memory_order_relaxed);
+                    for (int output = 0; output < MAX_CHANNELS; ++output) {
+                        mPatchbayReceiveRoutes[last][stream][output].store(false, std::memory_order_relaxed);
+                        mPatchbayReceiveRouteGains[last][stream][output].store(1.0f, std::memory_order_relaxed);
+                    }
+                }
+            }
+        } else {
+            for (int peer = peerCount; peer > index; --peer) {
+                if (peer >= MAX_PEERS) continue;
+                mPatchbayReceiveRoutesInitialized[peer].store(mPatchbayReceiveRoutesInitialized[peer - 1].load(std::memory_order_relaxed), std::memory_order_relaxed);
+                for (int stream = 0; stream < MAX_CHANNELS; ++stream) {
+                    mPatchbayReceiveInputGains[peer][stream].store(mPatchbayReceiveInputGains[peer - 1][stream].load(std::memory_order_relaxed), std::memory_order_relaxed);
+                    for (int output = 0; output < MAX_CHANNELS; ++output) {
+                        mPatchbayReceiveRoutes[peer][stream][output].store(mPatchbayReceiveRoutes[peer - 1][stream][output].load(std::memory_order_relaxed), std::memory_order_relaxed);
+                        mPatchbayReceiveRouteGains[peer][stream][output].store(mPatchbayReceiveRouteGains[peer - 1][stream][output].load(std::memory_order_relaxed), std::memory_order_relaxed);
+                    }
+                }
+            }
+            if (index >= 0 && index < MAX_PEERS) {
+                mPatchbayReceiveRoutesInitialized[index].store(false, std::memory_order_relaxed);
+                for (int stream = 0; stream < MAX_CHANNELS; ++stream) {
+                    mPatchbayReceiveInputGains[index][stream].store(1.0f, std::memory_order_relaxed);
+                    for (int output = 0; output < MAX_CHANNELS; ++output) {
+                        mPatchbayReceiveRoutes[index][stream][output].store(false, std::memory_order_relaxed);
+                        mPatchbayReceiveRouteGains[index][stream][output].store(1.0f, std::memory_order_relaxed);
+                    }
+                }
+            }
+        }
+    };
+    shiftReceiveRoutes(removed);
+
     if (removed) {
         // adjust mRemoteSendMatrix
         // shift rows
@@ -5227,7 +5427,7 @@ void SonobusAudioProcessor::updateRemotePeerSendChannels(int index, RemotePeer *
             totinchans += soundboardChannelProcessor->getNumberOfChannels();
         }
 
-        newchancnt = isAnythingRoutedToPeer(index) ? getMainBusNumOutputChannels() :  remote->nominalSendChannels <= 0 ? totinchans : remote->nominalSendChannels;
+        newchancnt = isAnythingRoutedToPeer(index) ? getMainBusNumOutputChannels() : sendChannelCountForMode(remote->nominalSendChannels, totinchans, mPatchbaySendChannelCount.get());
     }
     else {
         newchancnt = jmin(getMainBusNumOutputChannels(), remote->sendChannelsOverride);
@@ -6026,7 +6226,7 @@ SonobusAudioProcessor::RemotePeer * SonobusAudioProcessor::doAddRemotePeerIfNece
         retpeer->oursink->set_option(aoo_opt_protocol_flags, &flags, sizeof(int32_t));
 
         retpeer->nominalSendChannels = mSendChannels.get();
-        retpeer->sendChannels =  mSendChannels.get() <= 0 ?  mActiveSendChannels : mSendChannels.get();
+        retpeer->sendChannels = sendChannelCountForMode(mSendChannels.get(), mActiveSendChannels, mPatchbaySendChannelCount.get());
 
         setupSourceFormat(retpeer, retpeer->oursource.get());
         float sendbufsize = jmax(10.0, SENDBUFSIZE_SCALAR * 1000.0f * currSamplesPerBlock / getSampleRate());
@@ -6361,7 +6561,7 @@ ValueTree SonobusAudioProcessor::getSendUserFormatLayoutTree()
     // get userformat from send info
     ValueTree fmttree(channelLayoutsKey);
 
-    if (mSendChannels.get() == 1 || mSendChannels.get() == 2) {
+    if (mPatchbaySendChannelCount.get() <= 0 && (mSendChannels.get() == 1 || mSendChannels.get() == 2)) {
         // not multichannel, this is a mixdown
         ChannelGroupParams tmpgrp;
         tmpgrp.chanStartIndex = 0;
@@ -6602,6 +6802,11 @@ void SonobusAudioProcessor::parameterChanged (const String &parameterID, float n
     else if (parameterID == paramSendChannels) {
         mSendChannels = (int) newValue;
         
+        setRemotePeerNominalSendChannelCount(-1, mSendChannels.get());
+        updateRemotePeerUserFormat();
+    }
+    else if (parameterID == paramPatchbaySendChannelCount) {
+        mPatchbaySendChannelCount = jlimit(0, MAX_CHANNELS, (int) newValue);
         setRemotePeerNominalSendChannelCount(-1, mSendChannels.get());
         updateRemotePeerUserFormat();
     }
@@ -7040,8 +7245,31 @@ void SonobusAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBloc
         totsendchans += soundboardchans;
     }
 
-    int realsendchans = mSendChannels.get() <= 0 ? totsendchans : mSendChannels.get();
+    int realsendchans = sendChannelCountForMode(mSendChannels.get(), totsendchans, mPatchbaySendChannelCount.get());
     mActiveSendChannels = totsendchans;
+
+    if (!mPatchbaySendRoutesCustomized.load(std::memory_order_relaxed)) {
+        for (int source = 0; source < MAX_CHANNELS; ++source) {
+            for (int destination = 0; destination < MAX_CHANNELS; ++destination)
+                mPatchbaySendRoutes[source][destination].store(false, std::memory_order_relaxed);
+        }
+
+        const int sourceCount = jlimit(0, MAX_CHANNELS, inchannels);
+        const int destinationCount = jlimit(1, MAX_CHANNELS, realsendchans);
+        for (int source = 0; source < sourceCount; ++source) {
+            if (destinationCount == 1) {
+                mPatchbaySendRoutes[source][0].store(true, std::memory_order_relaxed);
+            } else if (destinationCount == 2 && sourceCount == 1) {
+                mPatchbaySendRoutes[source][0].store(true, std::memory_order_relaxed);
+                mPatchbaySendRoutes[source][1].store(true, std::memory_order_relaxed);
+            } else if (destinationCount == 2 && source >= 2) {
+                mPatchbaySendRoutes[source][0].store(true, std::memory_order_relaxed);
+                mPatchbaySendRoutes[source][1].store(true, std::memory_order_relaxed);
+            } else if (source < destinationCount) {
+                mPatchbaySendRoutes[source][source].store(true, std::memory_order_relaxed);
+            }
+        }
+    }
 
     inputMeterSource.resize (inchannels, meterRmsWindow);
     outputMeterSource.resize (outchannels, meterRmsWindow);
@@ -7108,7 +7336,7 @@ void SonobusAudioProcessor::setupSourceFormatsForAll()
             s->workBuffer.setSize(jmax(2, s->recvChannels), currSamplesPerBlock, false, false, true);
         }
 
-        s->sendChannels = isAnythingRoutedToPeer(i) ? outchannels : s->nominalSendChannels <= 0 ? inchannels : s->nominalSendChannels;
+        s->sendChannels = isAnythingRoutedToPeer(i) ? outchannels : sendChannelCountForMode(s->nominalSendChannels, inchannels, mPatchbaySendChannelCount.get());
         if (s->sendChannelsOverride > 0) {
             s->sendChannels = jmin(outchannels, s->sendChannelsOverride);
         }
@@ -7252,7 +7480,7 @@ void SonobusAudioProcessor::ensureBuffers(int numSamples)
         needpeersendupdate = true;
     }
 
-    int realsendchans = mSendChannels.get() <= 0 ? totsendchans : mSendChannels.get();
+    int realsendchans = sendChannelCountForMode(mSendChannels.get(), totsendchans, mPatchbaySendChannelCount.get());
 
 
     mActiveInputChannels = selfrecchans;
@@ -7266,7 +7494,7 @@ void SonobusAudioProcessor::ensureBuffers(int numSamples)
     }
 
 
-    auto maxworkbufchans = jmax(maxchans, totsendchans);
+    auto maxworkbufchans = jmax(maxchans, jmax(totsendchans, realsendchans));
 
     if (tempBuffer.getNumSamples() < numSamples || tempBuffer.getNumChannels() < maxchans) {
         tempBuffer.setSize(maxchans, numSamples, false, false, true);
@@ -7397,7 +7625,7 @@ void SonobusAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer
         totsendchans += soundboardChannelProcessor->getFileSourceNumberOfChannels();
     }
 
-    int realsendchans = sendChans <= 0 ? totsendchans :sendChans;
+    int realsendchans = sendChannelCountForMode(sendChans, totsendchans, mPatchbaySendChannelCount.get());
 
 
     // THIS SHOULDN"T GENERALLY HAPPEN, it should have been taken care of in prepareToPlay, but just in case.
@@ -7527,31 +7755,32 @@ void SonobusAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer
     // do the input panning before everything else
     int sendCh = mSendChannels.get();
     //int sendPanChannels = sendCh == 0 ?  inputBuffer.getNumChannels() : jmin(inputBuffer.getNumChannels(), jmax(mainBusOutputChannels, sendCh));
-    int sendPanChannels = sendCh == 0 ?  inputPostBuffer.getNumChannels() : jmin(sendWorkBuffer.getNumChannels(), sendCh);
+    int sendPanChannels = sendCh == 0 && mPatchbaySendChannelCount.get() <= 0 ? inputPostBuffer.getNumChannels() : jmin(sendWorkBuffer.getNumChannels(), sendChannelCountForMode(sendCh, inputPostBuffer.getNumChannels(), mPatchbaySendChannelCount.get()));
     //int panChannels = jmin(inputBuffer.getNumChannels(), jmax(mainBusOutputChannels, sendCh));
     // if sending as mono, split the difference about applying gain attenuation for the number of input channels
     float tgain = sendPanChannels == 1 && inputPostBuffer.getNumChannels() > 0 ? (1.0f/std::max(1.0f, (float)(inputPostBuffer.getNumChannels() * 0.5f))) : 1.0f;
 
     sendWorkBuffer.clear(0, numSamples);
 
-    if (sendPanChannels > 2 || sendCh == 0) {
-        // copy straight-thru
-        for (auto i = 0; i < sendWorkBuffer.getNumChannels() && i < inputPostBuffer.getNumChannels(); ++i) {
-            sendWorkBuffer.copyFrom (i, 0, inputPostBuffer, i, 0, numSamples);
-        }
-    }
-    else {
-        int srcstart = 0;
+    int inputPostStart = 0;
+    for (auto group = 0; group < mInputChannelGroupCount && group < MAX_CHANGROUPS; ++group) {
+        const auto & groupParams = mInputChannelGroups[group].params;
+        for (int channel = 0; channel < groupParams.numChannels; ++channel) {
+            const int hardwareChannel = groupParams.chanStartIndex + channel;
+            const int processedChannel = inputPostStart + channel;
+            if (hardwareChannel < 0 || hardwareChannel >= MAX_CHANNELS || processedChannel >= inputPostBuffer.getNumChannels())
+                continue;
+            const float inputGain = mPatchbaySendInputGains[hardwareChannel].load(std::memory_order_relaxed);
 
-        for (auto i = 0; i < mInputChannelGroupCount && i < MAX_CHANGROUPS; ++i)
-        {
-            // change dest ch target
-            int dstch = mInputChannelGroups[i].params.panDestStartIndex;  // todo change dest ch target
-            int dstcnt = jmin(sendPanChannels, mInputChannelGroups[i].params.panDestChannels);
-
-            mInputChannelGroups[i].processPan(inputPostBuffer, srcstart, sendWorkBuffer, dstch, dstcnt, numSamples, tgain);
-            srcstart += mInputChannelGroups[i].params.numChannels;
+            for (int streamChannel = 0; streamChannel < sendPanChannels && streamChannel < sendWorkBuffer.getNumChannels(); ++streamChannel) {
+                if (mPatchbaySendRoutes[hardwareChannel][streamChannel].load(std::memory_order_relaxed))
+                {
+                    const float routeGain = mPatchbaySendRouteGains[hardwareChannel][streamChannel].load(std::memory_order_relaxed);
+                    sendWorkBuffer.addFrom(streamChannel, 0, inputPostBuffer, processedChannel, 0, numSamples, tgain * inputGain * routeGain);
+                }
+            }
         }
+        inputPostStart += groupParams.numChannels;
     }
 
     // MAIN EFFECTS BUS
@@ -7783,6 +8012,8 @@ void SonobusAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer
 
 
     // send meter post panning (and post file and met)
+    for (int channel = 0; channel < sendPanChannels && channel < sendWorkBuffer.getNumChannels(); ++channel)
+        sendWorkBuffer.applyGain(channel, 0, numSamples, mPatchbaySendOutputGains[channel].load(std::memory_order_relaxed));
     sendMeterSource.measureBlock (sendWorkBuffer, 0, numSamples);
 
 
@@ -7928,6 +8159,29 @@ void SonobusAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer
 
             remote->recvMeterSource.measureBlock (remote->workBuffer, 0, numSamples);
 
+            if (rindex < MAX_PEERS && !mPatchbayReceiveRoutesInitialized[rindex].load(std::memory_order_relaxed)) {
+                for (int stream = 0; stream < MAX_CHANNELS; ++stream) {
+                    for (int output = 0; output < MAX_CHANNELS; ++output) {
+                        bool enabled = false;
+                        if (stream < remote->recvChannels && output < mainBusOutputChannels) {
+                            if (remote->recvChannels == 1) {
+                                enabled = output < jmin(2, mainBusOutputChannels);
+                            } else if (remote->recvChannels <= mainBusOutputChannels) {
+                                enabled = stream == output;
+                            } else if (mainBusOutputChannels <= 2) {
+                                // Preserve audibility for multichannel peers on stereo/mono hardware:
+                                // fold every incoming mono lane into the available main outputs.
+                                enabled = true;
+                            } else {
+                                enabled = stream == output || (stream >= mainBusOutputChannels && output < 2);
+                            }
+                        }
+                        mPatchbayReceiveRoutes[rindex][stream][output].store(enabled, std::memory_order_relaxed);
+                    }
+                }
+                mPatchbayReceiveRoutesInitialized[rindex].store(true, std::memory_order_relaxed);
+            }
+
             for (auto cgi = 0; cgi < remote->numChanGroups; ++cgi) {
                 float redlev = 1.0f;
                 if (remote->chanGroups[cgi].params.compressorParams.enabled && remote->chanGroups[cgi].compressorOutputLevel) {
@@ -7939,9 +8193,7 @@ void SonobusAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer
                 }
             }
 
-            ++rindex;
-            
-            if (wasSilent) continue; // can skip the rest, already fully muted/absent
+            if (wasSilent) { ++rindex; continue; } // can skip the rest, already fully muted/absent
             
             float tgain = mainBusOutputChannels == 1 && remote->recvChannels > 0 ? 1.0f/(float)remote->recvChannels : 1.0f;
             tgain *= usegain; // handles main solo
@@ -7951,16 +8203,30 @@ void SonobusAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer
             {
                 // apply solo muting to the gain here
                 float adjgain = anysubsolo && !remote->chanGroups[i].params.soloed ? 0.0f : tgain;
-                // todo change dest ch target
-                int dstch = remote->chanGroups[i].params.panDestStartIndex;
-                int dstcnt = jmin(totalOutputChannels, remote->chanGroups[i].params.panDestChannels);
-                remote->chanGroups[i].processPan(remote->workBuffer, remote->chanGroups[i].params.chanStartIndex, tempBuffer, dstch, dstcnt, numSamples, adjgain);
+
+                const auto & group = remote->chanGroups[i].params;
+                for (int source = 0; source < group.numChannels; ++source) {
+                    const int streamChannel = group.chanStartIndex + source;
+                    if (streamChannel < 0 || streamChannel >= remote->recvChannels || streamChannel >= MAX_CHANNELS)
+                        continue;
+                    for (int output = 0; output < totalOutputChannels && output < MAX_CHANNELS; ++output) {
+                        if (mPatchbayReceiveRoutes[rindex][streamChannel][output].load(std::memory_order_relaxed))
+                        {
+                            const float inputGain = mPatchbayReceiveInputGains[rindex][streamChannel].load(std::memory_order_relaxed);
+                            const float routeGain = mPatchbayReceiveRouteGains[rindex][streamChannel][output].load(std::memory_order_relaxed);
+                            const float outputGain = mPatchbayReceiveOutputGains[output].load(std::memory_order_relaxed);
+                            tempBuffer.addFrom(output, 0, remote->workBuffer, streamChannel, 0, numSamples, adjgain * inputGain * routeGain * outputGain);
+                        }
+                    }
+                }
 
                 if (doreverb) {
                     remote->chanGroups[i].processReverbSend(remote->workBuffer, remote->chanGroups[i].params.chanStartIndex, remote->chanGroups[i].params.numChannels, mainFxBuffer, 0, fxchannels, numSamples, mainReverbEnabled, false, adjgain);
                 }
 
             }
+
+            ++rindex;
 
         }
         

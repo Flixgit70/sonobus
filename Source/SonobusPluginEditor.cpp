@@ -22,6 +22,7 @@
 #include "SuggestNewGroupView.h"
 #include "SonoCallOutBox.h"
 #include <sstream>
+#include <cmath>
 
 #if JUCE_ANDROID
 #include "juce_core/native/juce_BasicNativeHeaders.h"
@@ -51,190 +52,320 @@ enum {
 using namespace SonoAudio;
 
 
-class SonobusAudioProcessorEditor::PatchMatrixView : public Component, public BeatToggleGridDelegate
+class SonobusAudioProcessorEditor::PatchMatrixView : public Component, private Timer
 {
 public:
-    PatchMatrixView(SonobusAudioProcessor& p) : Component(), processor(p) {
-        
-        grid = std::make_unique<BeatToggleGrid>();
-        grid->setDelegate(this);
-        
-        addAndMakeVisible(grid.get());
-        
-        updateGrid();
-    }
-    virtual ~PatchMatrixView() {
-    }
-    
-    bool beatToggleGridPressed(BeatToggleGrid* grid, int index, const MouseEvent & event) override { 
-        int count = processor.getNumberRemotePeers();
-        if (count == 0) return false;
-        
-        int src = index/count;
-        int dest = index % count;        
-        bool currval = processor.getPatchMatrixValue(src, dest);
-        valonpress = currval;
-        
-        processor.setPatchMatrixValue(src, dest, !currval);
-
-        updateGrid();
-
-        return true;
-    }
-    
-    bool beatToggleGridMoved(BeatToggleGrid* grid, int fromIndex, int toIndex, const MouseEvent & event) override {
-        int count = processor.getNumberRemotePeers();
-        if (count == 0) return false;
-        
-        int tosrc = toIndex/count;
-        int todest = toIndex % count;        
-        bool currval = processor.getPatchMatrixValue(tosrc, todest);
-        
-        processor.setPatchMatrixValue(tosrc, todest, !valonpress);
-        
-        updateGrid();
-        return true;
-    }
-    
-    bool beatToggleGridReleased(BeatToggleGrid* grid, int index, const MouseEvent & event) override {
-        return true;
-    }
-    
-    void updateGrid()
+    explicit PatchMatrixView(SonobusAudioProcessor& p) : processor(p)
     {
-        int count = processor.getNumberRemotePeers();
-        if ( count*count != grid->getItems()) {
-            updateGridLayout();
-        }
-        
-        for (int i=0; i < count; ++i) {
-            for (int j=0; j < count; ++j) {
-                int item = i*count + j;
-                
-                grid->setSelected(processor.getPatchMatrixValue(i, j), item);
-                if (i == j) {
-                    grid->setAccented(processor.getPatchMatrixValue(i, j), item);                    
-                }
-            }            
-        }
-        
-        grid->refreshGrid(false);
+        sendButton.setButtonText(TRANS("Inputs to Stream"));
+        receiveButton.setButtonText(TRANS("Stream to Outputs"));
+        clearRoutesButton.setButtonText(TRANS("Clear all routes"));
+        sendButton.onClick = [this] { sendMode = true; updateGridLayout(); };
+        receiveButton.onClick = [this] { sendMode = false; updateGridLayout(); };
+        clearRoutesButton.onClick = [this] { processor.clearPatchbayRoutes(); repaint(); };
+        streamSizeMinus.setButtonText("-");
+        streamSizePlus.setButtonText("+");
+        streamSizeMinus.setTooltip(TRANS("Remove one stream channel"));
+        streamSizePlus.setTooltip(TRANS("Add one stream channel"));
+        streamSizeMinus.onClick = [this] { changeStreamSize(-1); };
+        streamSizePlus.onClick = [this] { changeStreamSize(1); };
+        addAndMakeVisible(sendButton);
+        addAndMakeVisible(receiveButton);
+        addAndMakeVisible(clearRoutesButton);
+        addAndMakeVisible(streamSizeMinus);
+        addAndMakeVisible(streamSizePlus);
+        startTimerHz(20);
+        updateGridLayout();
+    }
+
+    Rectangle<int> getPreferredBounds() const { return { 0, 0, contentWidth, contentHeight }; }
+
+    void updateGridLayout()
+    {
+        refreshReceiveRows();
+        const int rows = getRowCount();
+        const int columns = getColumnCount();
+        contentWidth = jmax(650, labelWidth + columns * cellWidth + 12);
+        contentHeight = headerHeight + rows * rowHeight + 12;
+        streamSizeMinus.setEnabled(processor.getPatchbaySendChannelCount() > 1);
+        streamSizePlus.setEnabled(processor.getPatchbaySendChannelCount() < MAX_CHANNELS);
+        setSize(contentWidth, contentHeight);
         repaint();
     }
-    
-    Rectangle<int> getPreferredBounds() const
+
+    void updateGrid() { updateGridLayout(); }
+
+    void paint(Graphics& g) override
     {
-        int count = processor.getNumberRemotePeers();
-        int labwidth = 30;
-        int labheight= 18;
-        int buttwidth = 60;
-        int buttheight = 44;
+        g.fillAll(findColour(ResizableWindow::backgroundColourId));
+        const auto textColour = findColour(Label::textColourId);
+        const int rows = getRowCount();
+        const int columns = getColumnCount();
+        const int gridX = labelWidth;
+        const int gridY = headerHeight;
 
-        Rectangle<int> prefsize;
-        prefsize.setX(0);
-        prefsize.setY(0);
-        prefsize.setWidth(count * buttwidth + labwidth);
-        prefsize.setHeight(count * buttheight + labheight);
+        g.setColour(textColour.withAlpha(0.7f));
+        g.setFont(14.0f);
+        g.drawText(sendMode ? TRANS("Interface inputs") : TRANS("Remote streams"), 12, 54, labelWidth - 20, 22, Justification::centredLeft);
+        g.drawText(sendMode ? TRANS("Input meter") : TRANS("Stream meter"), 12, 77, labelWidth - 20, 20, Justification::centredLeft);
+        g.drawText(sendMode ? TRANS("Stream outputs") : TRANS("Interface outputs"), gridX, 54, sendMode ? 132 : columns * cellWidth, 22, sendMode ? Justification::centredLeft : Justification::centred);
+        g.drawText(sendMode ? TRANS("Stream meter") : TRANS("Output meter"), gridX, 77, columns * cellWidth, 20, Justification::centred);
 
-        return prefsize;
-    }
-
-    
-    void updateGridLayout() {
-
-        int count = processor.getNumberRemotePeers();
-        
-        
-        topbox.items.clear();
-        topbox.flexDirection = FlexBox::Direction::row;    
-        leftbox.items.clear();
-        leftbox.flexDirection = FlexBox::Direction::column;    
-
-        while (leftLabels.size() < count) {
-            Label * leftlab = new Label("lab", String::formatted("%d", leftLabels.size() + 1));
-            leftlab->setJustificationType(Justification::centred);
-            leftLabels.add(leftlab);
-
-            Label * toplab = new Label("lab", String::formatted("%d", topLabels.size() + 1));
-            toplab->setJustificationType(Justification::centred);
-            topLabels.add(toplab);
-
-            addAndMakeVisible( leftLabels.getUnchecked(leftLabels.size()-1));
-            addAndMakeVisible( topLabels.getUnchecked(topLabels.size()-1));
+        for (int column = 0; column < columns; ++column) {
+            auto cell = Rectangle<int>(gridX + column * cellWidth, gridY, cellWidth, rows * rowHeight);
+            g.setColour(textColour.withAlpha(0.08f));
+            g.fillRect(cell);
+            g.setColour(textColour.withAlpha(0.18f));
+            g.drawRect(cell);
+            drawMeter(g, getDestinationMeter(), column, gridX + column * cellWidth + 5, 119, cellWidth - 10, 7);
+            g.setColour(textColour);
+            g.setFont(12.0f);
+            String destinationLabel = sendMode ? TRANS("Stream") : TRANS("Out");
+            destinationLabel << " " << (column + 1);
+            g.drawFittedText(destinationLabel, gridX + column * cellWidth, 94, cellWidth, 20, Justification::centred, 1);
+            g.setFont(10.0f);
+            g.drawText(gainLabel(getDestinationGain(column)), gridX + column * cellWidth, 128, cellWidth, 12, Justification::centred);
         }
-        
-        for (int i=0; i < leftLabels.size(); ++i) {
-            leftLabels.getUnchecked(i)->setVisible(i < count);
-            topLabels.getUnchecked(i)->setVisible(i < count);
-        }
-        
-        int labwidth = 30;
-        int labheight= 18;
-        int buttheight = 36;
-        
-        topbox.items.add(FlexItem(labwidth, labheight));
 
-        grid->setItems(count * count);
-        grid->setSegments(count);
-        
-        for (int i=0; i < count; ++i) {
-            grid->setSegmentSize(count, i);
-        }
-        
-        grid->refreshGrid(true);
-        
-        for (int i=0; i < count; ++i) {
+        for (int row = 0; row < rows; ++row) {
+            const int y = gridY + row * rowHeight;
+            g.setColour(textColour.withAlpha(row % 2 == 0 ? 0.035f : 0.075f));
+            g.fillRect(0, y, contentWidth, rowHeight);
+            g.setColour(textColour.withAlpha(0.12f));
+            g.drawHorizontalLine(y + rowHeight - 1, 0.0f, (float) contentWidth);
+            g.setColour(textColour);
+            g.setFont(13.0f);
+            g.drawFittedText(getRowName(row), 12, y + 1, labelWidth - 20, 20, Justification::centredLeft, 1);
+            drawMeter(g, getSourceMeter(row), getSourceMeterChannel(row), 12, y + 20, labelWidth - 24, 6);
+            g.setFont(10.0f);
+            g.drawText(gainLabel(getSourceGain(row)), 12, y + 27, labelWidth - 24, 11, Justification::centredRight);
 
-            for (int j=0; j < count; ++j) {
-                int item = i*count + j;
-                grid->setLabel(String::formatted("%d>%d", i+1, j+1), item);                
+            for (int column = 0; column < columns; ++column) {
+                const bool connected = getRoute(row, column);
+                auto cross = Rectangle<int>(gridX + column * cellWidth + 8, y + 7, cellWidth - 16, rowHeight - 14);
+                g.setColour(connected ? Colour(0xff35bd70) : textColour.withAlpha(0.12f));
+                g.fillRoundedRectangle(cross.toFloat(), 4.0f);
+                if (connected) {
+                    const float level = jmap(jlimit(-60.0f, 12.0f, Decibels::gainToDecibels(getRouteGain(row, column), -60.0f)), -60.0f, 12.0f, 0.0f, 1.0f);
+                    g.setColour(Colour(0xffa7f3c4));
+                    g.fillRoundedRectangle((float)cross.getX() + 2.0f, (float)cross.getBottom() - 4.0f,
+                                           (float)(cross.getWidth() - 4) * level, 2.0f, 1.0f);
+                    g.setColour(textColour);
+                    g.setFont(9.0f);
+                    g.drawText(gainLabel(getRouteGain(row, column)), cross, Justification::centred);
+                }
+                g.setColour(textColour.withAlpha(connected ? 0.85f : 0.35f));
+                g.drawRoundedRectangle(cross.toFloat(), 4.0f, 1.0f);
             }
-            
-            topbox.items.add(FlexItem(20, labheight, *topLabels.getUnchecked(i)).withMargin(2).withFlex(1));
-            leftbox.items.add(FlexItem(20, labheight, *leftLabels.getUnchecked(i)).withMargin(2).withFlex(1));            
         }
-        
-
-        middlebox.items.clear();
-        middlebox.flexDirection = FlexBox::Direction::row;    
-        middlebox.items.add(FlexItem(labwidth, labheight, leftbox).withMargin(2).withFlex(0));
-        middlebox.items.add(FlexItem(labwidth, buttheight, *grid).withMargin(2).withFlex(1));
-        
-
-        
-        mainbox.items.clear();
-        mainbox.flexDirection = FlexBox::Direction::column;    
-        mainbox.items.add(FlexItem(labwidth*2, labheight, topbox).withMargin(2).withFlex(0).withMaxHeight(30));
-        mainbox.items.add(FlexItem(labwidth*2, buttheight, middlebox).withMargin(2).withFlex(1));
-        
-        resized();
     }
-    
-    void paint (Graphics& g) override
-    {
 
+    void mouseDown(const MouseEvent& event) override
+    {
+        const int row = (event.y - headerHeight) / rowHeight;
+        const int column = (event.x - labelWidth) / cellWidth;
+        if (event.y < headerHeight || event.x < labelWidth || row < 0 || row >= getRowCount() || column < 0 || column >= getColumnCount())
+            return;
+        setRoute(row, column, !getRoute(row, column));
+        repaint();
+    }
+
+    void mouseWheelMove(const MouseEvent& event, const MouseWheelDetails& wheel) override
+    {
+        const float deltaDb = wheel.deltaY * 2.0f;
+        if (std::abs(deltaDb) < 0.01f)
+            return;
+
+        const int row = (event.y - headerHeight) / rowHeight;
+        const int column = (event.x - labelWidth) / cellWidth;
+        if (event.y >= headerHeight && event.x >= labelWidth
+            && row >= 0 && row < getRowCount() && column >= 0 && column < getColumnCount()) {
+            const float nextGain = adjustedGain(getRouteGain(row, column), deltaDb);
+            if (!getRoute(row, column))
+                setRoute(row, column, true);
+            setRouteGain(row, column, nextGain);
+        } else if (event.y >= headerHeight && event.x < labelWidth && row >= 0 && row < getRowCount()) {
+            setSourceGain(row, adjustedGain(getSourceGain(row), deltaDb));
+        } else if (event.y >= 110 && event.y < headerHeight && event.x >= labelWidth
+                   && column >= 0 && column < getColumnCount()) {
+            setDestinationGain(column, adjustedGain(getDestinationGain(column), deltaDb));
+        } else {
+            return;
+        }
+        repaint();
     }
 
     void resized() override
     {
-        Component::resized();
-        
-        mainbox.performLayout(getLocalBounds());    
+        sendButton.setBounds(12, 8, 180, 34);
+        receiveButton.setBounds(200, 8, 200, 34);
+        clearRoutesButton.setBounds(410, 8, 170, 34);
+        streamSizeMinus.setBounds(labelWidth + 134, 50, 28, 28);
+        streamSizePlus.setBounds(labelWidth + 166, 50, 28, 28);
+        streamSizeMinus.setVisible(sendMode);
+        streamSizePlus.setVisible(sendMode);
+        sendButton.setToggleState(sendMode, dontSendNotification);
+        receiveButton.setToggleState(!sendMode, dontSendNotification);
     }
-    
-    std::unique_ptr<BeatToggleGrid> grid;
-    OwnedArray<Label> leftLabels;
-    OwnedArray<Label> topLabels;
 
-    FlexBox mainbox;
-    FlexBox middlebox;
-    FlexBox leftbox;
-    FlexBox topbox;
+private:
+    static constexpr int labelWidth = 190, cellWidth = 52, rowHeight = 40, headerHeight = 150;
+    TextButton sendButton, receiveButton, clearRoutesButton;
+    TextButton streamSizeMinus, streamSizePlus;
+    SonobusAudioProcessor& processor;
+    bool sendMode = true;
+    int contentWidth = 650, contentHeight = 400;
+    Array<int> rowPeers, rowChannels;
 
-    
-    bool valonpress = false;
-    
-    SonobusAudioProcessor & processor;
+    void changeStreamSize(int delta)
+    {
+        const int nextCount = jlimit(1, MAX_CHANNELS, processor.getPatchbaySendChannelCount() + delta);
+        auto* sizeParameter = processor.getValueTreeState().getParameter(SonobusAudioProcessor::paramPatchbaySendChannelCount);
+        sizeParameter->setValueNotifyingHost(sizeParameter->convertTo0to1(nextCount));
+
+        auto* modeParameter = processor.getValueTreeState().getParameter(SonobusAudioProcessor::paramSendChannels);
+        modeParameter->setValueNotifyingHost(modeParameter->convertTo0to1(0));
+        updateGridLayout();
+    }
+
+    int getRowCount()
+    {
+        if (sendMode) return jlimit(0, MAX_CHANNELS, processor.getInputMeterSource().getNumChannels());
+        return rowPeers.size();
+    }
+
+    void refreshReceiveRows()
+    {
+        rowPeers.clear();
+        rowChannels.clear();
+        if (sendMode)
+            return;
+        const int peers = jmin(MAX_PEERS, processor.getNumberRemotePeers());
+        for (int peer = 0; peer < peers; ++peer)
+            for (int channel = 0; channel < jmin(MAX_CHANNELS, processor.getRemotePeerRecvChannelCount(peer)); ++channel) {
+                rowPeers.add(peer);
+                rowChannels.add(channel);
+            }
+    }
+
+    int getColumnCount() const
+    {
+        return sendMode ? processor.getPatchbaySendChannelCount() : jlimit(0, MAX_CHANNELS, processor.getOutputMeterSource().getNumChannels());
+    }
+
+    String getRowName(int row)
+    {
+        if (sendMode) return String::formatted("Input %d", row + 1);
+        const int peer = rowPeers[row];
+        return processor.getRemotePeerUserName(peer) + "  -  " + String::formatted("Ch %d", rowChannels[row] + 1);
+    }
+
+    foleys::LevelMeterSource* getSourceMeter(int row)
+    {
+        if (sendMode) return &processor.getInputMeterSource();
+        return processor.getRemotePeerRecvMeterSource(rowPeers[row]);
+    }
+
+    int getSourceMeterChannel(int row)
+    {
+        if (sendMode) return row;
+        return rowChannels[row];
+    }
+
+    foleys::LevelMeterSource* getDestinationMeter() const
+    {
+        return sendMode ? &processor.getSendMeterSource() : &processor.getOutputMeterSource();
+    }
+
+    void drawMeter(Graphics& g, foleys::LevelMeterSource* meter, int channel, int x, int y, int width, int height)
+    {
+        g.setColour(findColour(Label::textColourId).withAlpha(0.12f));
+        g.fillRoundedRectangle((float)x, (float)y, (float)width, (float)height, 2.0f);
+        if (meter == nullptr || channel < 0 || channel >= meter->getNumChannels()) return;
+        const float level = jlimit(0.0f, 1.0f, meter->getRMSLevel(channel));
+        g.setColour(level > 0.9f ? Colour(0xffe45252) : Colour(0xff42c878));
+        g.fillRoundedRectangle((float)x, (float)y, width * level, (float)height, 2.0f);
+        const float peak = jlimit(0.0f, 1.0f, meter->getMaxLevel(channel));
+        if (peak > level && peak > 0.002f) {
+            g.setColour(Colour(0xffffd166));
+            g.fillRect(x + roundToInt(width * peak) - 1, y - 1, 2, height + 2);
+        }
+    }
+
+    bool getRoute(int row, int column)
+    {
+        if (sendMode) return processor.getPatchbaySendRoute(row, column);
+        return processor.getPatchbayReceiveRoute(rowPeers[row], rowChannels[row], column);
+    }
+
+    void setRoute(int row, int column, bool enabled)
+    {
+        if (sendMode) processor.setPatchbaySendRoute(row, column, enabled);
+        else {
+            processor.setPatchbayReceiveRoute(rowPeers[row], rowChannels[row], column, enabled);
+        }
+    }
+
+    float getSourceGain(int row)
+    {
+        if (sendMode) return processor.getPatchbaySendInputGain(row);
+        return processor.getPatchbayReceiveInputGain(rowPeers[row], rowChannels[row]);
+    }
+
+    void setSourceGain(int row, float gain)
+    {
+        if (sendMode) processor.setPatchbaySendInputGain(row, gain);
+        else {
+            processor.setPatchbayReceiveInputGain(rowPeers[row], rowChannels[row], gain);
+        }
+    }
+
+    float getDestinationGain(int column) const
+    {
+        return sendMode ? processor.getPatchbaySendOutputGain(column) : processor.getPatchbayReceiveOutputGain(column);
+    }
+
+    void setDestinationGain(int column, float gain)
+    {
+        if (sendMode) processor.setPatchbaySendOutputGain(column, gain);
+        else processor.setPatchbayReceiveOutputGain(column, gain);
+    }
+
+    float getRouteGain(int row, int column)
+    {
+        if (sendMode) return processor.getPatchbaySendRouteGain(row, column);
+        return processor.getPatchbayReceiveRouteGain(rowPeers[row], rowChannels[row], column);
+    }
+
+    void setRouteGain(int row, int column, float gain)
+    {
+        if (sendMode) processor.setPatchbaySendRouteGain(row, column, gain);
+        else {
+            processor.setPatchbayReceiveRouteGain(rowPeers[row], rowChannels[row], column, gain);
+        }
+    }
+
+    static float adjustedGain(float gain, float deltaDb)
+    {
+        const float db = jlimit(-60.0f, 12.0f, Decibels::gainToDecibels(gain, -60.0f) + deltaDb);
+        return Decibels::decibelsToGain(db);
+    }
+
+    static String gainLabel(float gain)
+    {
+        const float db = Decibels::gainToDecibels(gain, -60.0f);
+        return String(roundToInt(db)) + " dB";
+    }
+
+    void timerCallback() override
+    {
+        const int oldRows = rowPeers.size();
+        refreshReceiveRows();
+        if (!sendMode && oldRows != rowPeers.size())
+            updateGridLayout();
+        else
+            repaint();
+    }
 };
 
 
@@ -1493,7 +1624,7 @@ void SonobusAudioProcessorEditor::channelLayoutChanged(ChannelGroupsView *comp)
     int sendchval = (int) processor.getSendChannels();
     mSendChannelsChoice->setSelectedId(sendchval, dontSendNotification);
     if (sendchval > 0) {
-        inputMeter->setFixedNumChannels(sendchval);
+        inputMeter->setFixedNumChannels(sendchval == 3 ? MAX_CHANNELS : sendchval);
     } else {
         inputMeter->setFixedNumChannels(processor.getActiveSendChannelCount());
     }
@@ -1769,6 +1900,8 @@ void SonobusAudioProcessorEditor::choiceButtonSelected(SonoChoiceButton *comp, i
         processor.setMainReverbModel((SonobusAudioProcessor::ReverbModel) ident);
     }
     else if (comp == mSendChannelsChoice.get()) {
+        auto* patchbayCount = processor.getValueTreeState().getParameter(SonobusAudioProcessor::paramPatchbaySendChannelCount);
+        patchbayCount->setValueNotifyingHost(patchbayCount->convertTo0to1(0));
         float fval = processor.getValueTreeState().getParameter(SonobusAudioProcessor::paramSendChannels)->convertTo0to1(ident);
         processor.getValueTreeState().getParameter(SonobusAudioProcessor::paramSendChannels)->setValueNotifyingHost(fval);
         updateLayout();
@@ -3011,6 +3144,8 @@ void SonobusAudioProcessorEditor::showPatchbay(bool flag)
         mPatchMatrixView->updateGrid();
         
         Rectangle<int> bounds =  dw->getLocalArea(nullptr, mPatchbayButton->getScreenBounds());
+        // Lift the callout so a larger part of the routing grid is visible above the toolbar.
+        bounds.translate(0, -jmin(80, bounds.getY()));
         DBG("callout bounds: " << bounds.toString());
         patchbayCalloutBox = & CallOutBox::launchAsynchronously (std::move(wrap), bounds , dw, false);
         if (CallOutBox * box = dynamic_cast<CallOutBox*>(patchbayCalloutBox.get())) {
@@ -3611,7 +3746,7 @@ void SonobusAudioProcessorEditor::updateState(bool rebuildInputChannels)
 
 
     if (sendchval > 0) {
-        inputMeter->setFixedNumChannels(sendchval);
+        inputMeter->setFixedNumChannels(sendchval == 3 ? MAX_CHANNELS : sendchval);
     } else {
         //inputMeter->setFixedNumChannels(processor.getMainBusNumInputChannels());
         inputMeter->setFixedNumChannels(processor.getActiveSendChannelCount());
@@ -3675,7 +3810,11 @@ void SonobusAudioProcessorEditor::updateState(bool rebuildInputChannels)
         }
         
         mSetupAudioButton->setVisible(false);
+#if JUCE_IOS || JUCE_ANDROID
         mPatchbayButton->setVisible(false);
+#else
+        mPatchbayButton->setVisible(true);
+#endif
     }
     else {
         mMainGroupLabel->setText("", dontSendNotification);
@@ -3720,11 +3859,7 @@ void SonobusAudioProcessorEditor::updateState(bool rebuildInputChannels)
         }
 
         
-        if (processor.getNumberRemotePeers() > 1 && !currConnected) {
-            mPatchbayButton->setVisible(true);
-        } else {
-            mPatchbayButton->setVisible(false);            
-        }
+        mPatchbayButton->setVisible(true);
 #endif   
     }
     
@@ -4967,10 +5102,8 @@ void SonobusAudioProcessorEditor::updateLayout()
    
 #if JUCE_IOS || JUCE_ANDROID
 #else
-    if (processor.getCurrentJoinedGroup().isEmpty() && processor.getNumberRemotePeers() > 1) {
-        toolbarBox.items.add(FlexItem(6, 6).withMargin(1).withFlex(0.2));
-        toolbarBox.items.add(FlexItem(60, minitemheight, *mPatchbayButton).withMargin(2).withFlex(0.5).withMaxWidth(120));
-    }
+    toolbarBox.items.add(FlexItem(6, 6).withMargin(1).withFlex(0.2));
+    toolbarBox.items.add(FlexItem(60, minitemheight, *mPatchbayButton).withMargin(2).withFlex(0.5).withMaxWidth(120));
 #endif
 
     if (mRecordingButton) {

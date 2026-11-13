@@ -1,5 +1,6 @@
 
 build
+build-patchbay
 build32
 buildXcode
 release/1.*

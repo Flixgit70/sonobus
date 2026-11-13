@@ -242,6 +242,7 @@ public:
     static String paramDry;
     static String paramWet;
     static String paramSendChannels;
+    static String paramPatchbaySendChannelCount;
     static String paramBufferTime;
     static String paramDefaultAutoNetbuf;
     static String paramDefaultNetbufMs;
@@ -638,6 +639,25 @@ public:
     bool getPatchMatrixValue(int srcindex, int destindex) const;
     void setPatchMatrixValue(int srcindex, int destindex, bool value);
 
+    bool getPatchbaySendRoute(int inputChannel, int streamChannel) const;
+    void setPatchbaySendRoute(int inputChannel, int streamChannel, bool enabled);
+    bool getPatchbayReceiveRoute(int peerIndex, int streamChannel, int outputChannel) const;
+    void setPatchbayReceiveRoute(int peerIndex, int streamChannel, int outputChannel, bool enabled);
+    float getPatchbaySendInputGain(int inputChannel) const;
+    void setPatchbaySendInputGain(int inputChannel, float gain);
+    float getPatchbaySendOutputGain(int streamChannel) const;
+    void setPatchbaySendOutputGain(int streamChannel, float gain);
+    float getPatchbaySendRouteGain(int inputChannel, int streamChannel) const;
+    void setPatchbaySendRouteGain(int inputChannel, int streamChannel, float gain);
+    float getPatchbayReceiveInputGain(int peerIndex, int streamChannel) const;
+    void setPatchbayReceiveInputGain(int peerIndex, int streamChannel, float gain);
+    float getPatchbayReceiveOutputGain(int outputChannel) const;
+    void setPatchbayReceiveOutputGain(int outputChannel, float gain);
+    float getPatchbayReceiveRouteGain(int peerIndex, int streamChannel, int outputChannel) const;
+    void setPatchbayReceiveRouteGain(int peerIndex, int streamChannel, int outputChannel, float gain);
+    void clearPatchbayRoutes();
+    int getPatchbaySendChannelCount() const;
+
     int getActiveSendChannelCount() const { return mActiveSendChannels; }
 
     foleys::LevelMeterSource & getInputMeterSource() { return inputMeterSource; }
@@ -976,6 +996,7 @@ private:
     Atomic<bool>   mMetEnabled  { false };
     Atomic<bool>   mSendMet  { false };
     Atomic<int>   mSendChannels  { 1 }; // 0 is match inputs, 1 is 1, etc
+    Atomic<int>   mPatchbaySendChannelCount { 0 }; // 0 follows the legacy send mode; otherwise 1..MAX_CHANNELS
     Atomic<float>   mMetGain    { 0.5f };
     Atomic<double>   mMetTempo    { 100.0f };
     Atomic<bool>   mSendPlaybackAudio  { false };
@@ -1162,6 +1183,17 @@ private:
     void initFormats();
     
     bool mRemoteSendMatrix[MAX_PEERS][MAX_PEERS];
+
+    std::atomic<bool> mPatchbaySendRoutes[MAX_CHANNELS][MAX_CHANNELS] {};
+    std::atomic<bool> mPatchbayReceiveRoutes[MAX_PEERS][MAX_CHANNELS][MAX_CHANNELS] {};
+    std::atomic<bool> mPatchbayReceiveRoutesInitialized[MAX_PEERS] {};
+    std::atomic<bool> mPatchbaySendRoutesCustomized { false };
+    std::atomic<float> mPatchbaySendInputGains[MAX_CHANNELS];
+    std::atomic<float> mPatchbaySendOutputGains[MAX_CHANNELS];
+    std::atomic<float> mPatchbaySendRouteGains[MAX_CHANNELS][MAX_CHANNELS];
+    std::atomic<float> mPatchbayReceiveInputGains[MAX_PEERS][MAX_CHANNELS];
+    std::atomic<float> mPatchbayReceiveOutputGains[MAX_CHANNELS];
+    std::atomic<float> mPatchbayReceiveRouteGains[MAX_PEERS][MAX_CHANNELS][MAX_CHANNELS];
     
     
     void notifySendThread() {

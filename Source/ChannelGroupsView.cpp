@@ -2025,7 +2025,8 @@ void ChannelGroupsView::updateLayoutForRemotePeer(bool notify)
         }
 
 
-        bool destbuttvisible = true;
+        // Main receive output routing is handled by the patchbay now.
+        bool destbuttvisible = false;
 
         if (chi == 0 || (totalchans > 1) )
         {
@@ -3084,7 +3085,7 @@ void ChannelGroupsView::updatePeerModeChannelViews(int specific)
         }
     }
 
-    bool maindestbuttvisible = !expanded && changroups == 1 /*&& chcnt < totaloutchans */;
+    bool maindestbuttvisible = false; // Main receive outputs are patched in the patchbay.
     mMainChannelView->destButton->setVisible(maindestbuttvisible);
 
     if (maindestbuttvisible) {
@@ -3256,7 +3257,7 @@ void ChannelGroupsView::updatePeerModeChannelViews(int specific)
         }
 
         bool isprimary = chi == 0;
-        bool destbuttvisible = isprimary /*&& chcnt < totaloutchans */;
+        bool destbuttvisible = false; // Main receive outputs are patched in the patchbay.
         pvf->levelSlider->setVisible(isprimary);
         pvf->soloButton->setVisible(isprimary);
         pvf->muteButton->setVisible(isprimary);
