@@ -4,15 +4,13 @@ on:
   push:
     tags:
       - 'v*-beta*'
-  release:
-    types: [published]
 
 permissions:
   contents: write
 
 jobs:
   windows-vst3:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -30,6 +28,7 @@ jobs:
       - name: Attach Windows VST3 to beta release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: SonoBus-Windows-x64-VST3.zip
           prerelease: true
           fail_on_unmatched_files: true
