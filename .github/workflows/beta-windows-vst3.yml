@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*-beta*'
+  release:
+    types: [published]
 
 permissions:
   contents: write
