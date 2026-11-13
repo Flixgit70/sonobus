@@ -203,13 +203,22 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
       )
 
 
+    # ASIO is optional when the separately licensed SDK is not available.
+    set(SONOBUS_JUCE_ASIO 1)
+
     # platform specific stuff
     if (APPLE)
         list (APPEND HEADER_INCLUDES deps/mac/include)
         list (APPEND LIB_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/deps/mac/lib)
         list (APPEND PlatSourceFiles  Source/CrossPlatformUtilsMac.mm)
     elseif (WIN32)
-        list (APPEND HEADER_INCLUDES deps/windows ../asiosdk/common)
+        list (APPEND HEADER_INCLUDES deps/windows)
+        if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../asiosdk/common/iasiodrv.h")
+            list (APPEND HEADER_INCLUDES ../asiosdk/common)
+        else()
+            set(SONOBUS_JUCE_ASIO 0)
+            message(WARNING "ASIO SDK not found; JUCE ASIO support will be disabled for this build.")
+        endif()
         list (APPEND PlatSourceFiles  Source/CrossPlatformUtilsWindows.cpp)
 
 	message (STATUS "Win generator platform is: ${CMAKE_VS_PLATFORM_NAME}" )
@@ -445,7 +454,7 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
         JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1
 	JUCE_USE_WINDOWS_MEDIA_FORMAT=1
         JUCE_LOAD_CURL_SYMBOLS_LAZILY=1
-        JUCE_ASIO=1
+        JUCE_ASIO=${SONOBUS_JUCE_ASIO}
         JUCE_WASAPI=1
         JUCE_DIRECTSOUND=0
         JUCE_JACK=1
