@@ -38,7 +38,7 @@ endif()
 
 project(SonoBus VERSION 1.7.2)
 
-set(BUILDVERSION 80)
+set(BUILDVERSION 81)
 
 
 # If you've installed JUCE somehow (via a package manager, or directly using the CMake install

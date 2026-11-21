@@ -4763,7 +4763,11 @@ void SonobusAudioProcessor::adjustRemoteSendMatrix(int index, bool removed)
                     }
                 }
             }
-            if (index >= 0 && index < MAX_PEERS) {
+            if (index >= 0 && index < MAX_PEERS
+                && !mPatchbayReceiveRoutesInitialized[index].load(std::memory_order_relaxed)) {
+                // A host project can restore patchbay rows before network
+                // peers reconnect. Keep a restored row for its peer index;
+                // only clear the slot when it has not already been prepared.
                 mPatchbayReceiveRoutesInitialized[index].store(false, std::memory_order_relaxed);
                 for (int stream = 0; stream < MAX_CHANNELS; ++stream) {
                     mPatchbayReceiveInputGains[index][stream].store(1.0f, std::memory_order_relaxed);
@@ -8855,6 +8859,95 @@ void SonobusAudioProcessor::getStateInformationWithOptions(MemoryBlock& destData
         tempstate.removeChild(peerCacheTree, nullptr);
     }
 
+    // Patchbay routing and gains are not APVTS parameters, so persist them
+    // explicitly in the processor state used by plugin hosts and presets.
+    ValueTree patchbayTree("PatchbayState");
+    patchbayTree.setProperty("sendRoutesCustomized", mPatchbaySendRoutesCustomized.load(std::memory_order_relaxed), nullptr);
+
+    for (int input = 0; input < MAX_CHANNELS; ++input) {
+        const float inputGain = mPatchbaySendInputGains[input].load(std::memory_order_relaxed);
+        const float outputGain = mPatchbaySendOutputGains[input].load(std::memory_order_relaxed);
+        const float receiveOutputGain = mPatchbayReceiveOutputGains[input].load(std::memory_order_relaxed);
+
+        if (inputGain != 1.0f) {
+            ValueTree gain("SendInputGain");
+            gain.setProperty("channel", input, nullptr);
+            gain.setProperty("value", inputGain, nullptr);
+            patchbayTree.appendChild(gain, nullptr);
+        }
+        if (outputGain != 1.0f) {
+            ValueTree gain("SendOutputGain");
+            gain.setProperty("channel", input, nullptr);
+            gain.setProperty("value", outputGain, nullptr);
+            patchbayTree.appendChild(gain, nullptr);
+        }
+        if (receiveOutputGain != 1.0f) {
+            ValueTree gain("ReceiveOutputGain");
+            gain.setProperty("channel", input, nullptr);
+            gain.setProperty("value", receiveOutputGain, nullptr);
+            patchbayTree.appendChild(gain, nullptr);
+        }
+
+        for (int stream = 0; stream < MAX_CHANNELS; ++stream) {
+            if (mPatchbaySendRoutes[input][stream].load(std::memory_order_relaxed)) {
+                ValueTree route("SendRoute");
+                route.setProperty("input", input, nullptr);
+                route.setProperty("stream", stream, nullptr);
+                patchbayTree.appendChild(route, nullptr);
+            }
+
+            const float routeGain = mPatchbaySendRouteGains[input][stream].load(std::memory_order_relaxed);
+            if (routeGain != 1.0f) {
+                ValueTree gain("SendRouteGain");
+                gain.setProperty("input", input, nullptr);
+                gain.setProperty("stream", stream, nullptr);
+                gain.setProperty("value", routeGain, nullptr);
+                patchbayTree.appendChild(gain, nullptr);
+            }
+        }
+    }
+
+    for (int peer = 0; peer < MAX_PEERS; ++peer) {
+        if (mPatchbayReceiveRoutesInitialized[peer].load(std::memory_order_relaxed)) {
+            ValueTree initialized("ReceivePeer");
+            initialized.setProperty("peer", peer, nullptr);
+            patchbayTree.appendChild(initialized, nullptr);
+        }
+
+        for (int stream = 0; stream < MAX_CHANNELS; ++stream) {
+            const float inputGain = mPatchbayReceiveInputGains[peer][stream].load(std::memory_order_relaxed);
+            if (inputGain != 1.0f) {
+                ValueTree gain("ReceiveInputGain");
+                gain.setProperty("peer", peer, nullptr);
+                gain.setProperty("stream", stream, nullptr);
+                gain.setProperty("value", inputGain, nullptr);
+                patchbayTree.appendChild(gain, nullptr);
+            }
+
+            for (int output = 0; output < MAX_CHANNELS; ++output) {
+                if (mPatchbayReceiveRoutes[peer][stream][output].load(std::memory_order_relaxed)) {
+                    ValueTree route("ReceiveRoute");
+                    route.setProperty("peer", peer, nullptr);
+                    route.setProperty("stream", stream, nullptr);
+                    route.setProperty("output", output, nullptr);
+                    patchbayTree.appendChild(route, nullptr);
+                }
+
+                const float routeGain = mPatchbayReceiveRouteGains[peer][stream][output].load(std::memory_order_relaxed);
+                if (routeGain != 1.0f) {
+                    ValueTree gain("ReceiveRouteGain");
+                    gain.setProperty("peer", peer, nullptr);
+                    gain.setProperty("stream", stream, nullptr);
+                    gain.setProperty("output", output, nullptr);
+                    gain.setProperty("value", routeGain, nullptr);
+                    patchbayTree.appendChild(gain, nullptr);
+                }
+            }
+        }
+    }
+
+    tempstate.addChild(patchbayTree, -1, nullptr);
+
     if (xmlformat) {
         stream.writeString(tempstate.toXmlString());
     }
@@ -8888,6 +8981,65 @@ void SonobusAudioProcessor::setStateInformationWithOptions (const void* data, in
 
     if (tree.isValid()) {
         mState.state = tree;
+
+        // Start with a clean default matrix so loading an older preset (which
+        // has no PatchbayState node) cannot accidentally retain another
+        // session's routes and gains.
+        mPatchbaySendRoutesCustomized.store(false, std::memory_order_relaxed);
+        for (int input = 0; input < MAX_CHANNELS; ++input) {
+            mPatchbaySendInputGains[input].store(1.0f, std::memory_order_relaxed);
+            mPatchbaySendOutputGains[input].store(1.0f, std::memory_order_relaxed);
+            mPatchbayReceiveOutputGains[input].store(1.0f, std::memory_order_relaxed);
+            for (int stream = 0; stream < MAX_CHANNELS; ++stream) {
+                mPatchbaySendRoutes[input][stream].store(false, std::memory_order_relaxed);
+                mPatchbaySendRouteGains[input][stream].store(1.0f, std::memory_order_relaxed);
+            }
+        }
+        for (int peer = 0; peer < MAX_PEERS; ++peer) {
+            mPatchbayReceiveRoutesInitialized[peer].store(false, std::memory_order_relaxed);
+            for (int stream = 0; stream < MAX_CHANNELS; ++stream) {
+                mPatchbayReceiveInputGains[peer][stream].store(1.0f, std::memory_order_relaxed);
+                for (int output = 0; output < MAX_CHANNELS; ++output) {
+                    mPatchbayReceiveRoutes[peer][stream][output].store(false, std::memory_order_relaxed);
+                    mPatchbayReceiveRouteGains[peer][stream][output].store(1.0f, std::memory_order_relaxed);
+                }
+            }
+        }
+
+        ValueTree patchbayTree = tree.getChildWithName("PatchbayState");
+        if (patchbayTree.isValid()) {
+            mPatchbaySendRoutesCustomized.store(patchbayTree.getProperty("sendRoutesCustomized", false), std::memory_order_relaxed);
+
+            for (auto child : patchbayTree) {
+                const auto type = child.getType().toString();
+                const int channel = (int)child.getProperty("channel", -1);
+                const int input = (int)child.getProperty("input", -1);
+                const int stream = (int)child.getProperty("stream", -1);
+                const int output = (int)child.getProperty("output", -1);
+                const int peer = (int)child.getProperty("peer", -1);
+                const float value = (float)child.getProperty("value", 1.0f);
+
+                if (type == "SendRoute" && input >= 0 && input < MAX_CHANNELS && stream >= 0 && stream < MAX_CHANNELS) {
+                    mPatchbaySendRoutes[input][stream].store(true, std::memory_order_relaxed);
+                } else if (type == "SendInputGain" && channel >= 0 && channel < MAX_CHANNELS) {
+                    mPatchbaySendInputGains[channel].store(clampPatchbayGain(value), std::memory_order_relaxed);
+                } else if (type == "SendOutputGain" && channel >= 0 && channel < MAX_CHANNELS) {
+                    mPatchbaySendOutputGains[channel].store(clampPatchbayGain(value), std::memory_order_relaxed);
+                } else if (type == "SendRouteGain" && input >= 0 && input < MAX_CHANNELS && stream >= 0 && stream < MAX_CHANNELS) {
+                    mPatchbaySendRouteGains[input][stream].store(clampPatchbayGain(value), std::memory_order_relaxed);
+                } else if (type == "ReceivePeer" && peer >= 0 && peer < MAX_PEERS) {
+                    mPatchbayReceiveRoutesInitialized[peer].store(true, std::memory_order_relaxed);
+                } else if (type == "ReceiveRoute" && peer >= 0 && peer < MAX_PEERS && stream >= 0 && stream < MAX_CHANNELS && output >= 0 && output < MAX_CHANNELS) {
+                    mPatchbayReceiveRoutes[peer][stream][output].store(true, std::memory_order_relaxed);
+                } else if (type == "ReceiveInputGain" && peer >= 0 && peer < MAX_PEERS && stream >= 0 && stream < MAX_CHANNELS) {
+                    mPatchbayReceiveInputGains[peer][stream].store(clampPatchbayGain(value), std::memory_order_relaxed);
+                } else if (type == "ReceiveOutputGain" && channel >= 0 && channel < MAX_CHANNELS) {
+                    mPatchbayReceiveOutputGains[channel].store(clampPatchbayGain(value), std::memory_order_relaxed);
+                } else if (type == "ReceiveRouteGain" && peer >= 0 && peer < MAX_PEERS && stream >= 0 && stream < MAX_CHANNELS && output >= 0 && output < MAX_CHANNELS) {
+                    mPatchbayReceiveRouteGains[peer][stream][output].store(clampPatchbayGain(value), std::memory_order_relaxed);
+                }
+            }
+        }
         
         DBG("SETSTATE: " << mState.state.toXmlString());
 
