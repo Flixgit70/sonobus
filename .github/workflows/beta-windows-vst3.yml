@@ -1,4 +1,4 @@
-name: Beta release Windows VST3
+name: Beta release SonoBus and Streamer
 
 on:
   push:
@@ -9,7 +9,49 @@ permissions:
   contents: write
 
 jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure universal build
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUniversalBinary=ON
+
+      - name: Build macOS products
+        run: cmake --build build --config Release --target SonoBus_VST3 SonoBus_Standalone SonoBusStreamer_VST3 SonoBusStreamer_Standalone --parallel 4
+
+      - name: Package macOS products
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "build/SonoBus_artefacts/Release/VST3/SonoBus.vst3" "SonoBus-macOS-Universal-VST3.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/SonoBus_artefacts/Release/Standalone/SonoBus.app" "SonoBus-macOS-Universal-Standalone.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/SonoBusStreamer_artefacts/Release/VST3/SonoBus Streamer.vst3" "SonoBusStreamer-macOS-Universal-VST3.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/SonoBusStreamer_artefacts/Release/Standalone/SonoBus Streamer.app" "SonoBusStreamer-macOS-Universal-Standalone.zip"
+
+      - name: Publish macOS assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: SonoBus 1.7.2 Patchbay Beta 3
+          body: |
+            SonoBus 1.7.2 Patchbay Beta 3
+
+            - Adds SonoBus Streamer as a separate VST3 and Standalone product, compatible with SonoBus network streams.
+            - The Stream to Outputs patchbay now lets you select the incoming participant stream explicitly and shows which stream is being patched.
+            - Includes universal macOS VST3 and Standalone builds for SonoBus and SonoBus Streamer.
+            - Windows x64 VST3 builds are attached after the Windows workflow finishes.
+            - The iOS Streamer product is not included in this beta.
+          prerelease: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            SonoBus-macOS-Universal-VST3.zip
+            SonoBus-macOS-Universal-Standalone.zip
+            SonoBusStreamer-macOS-Universal-VST3.zip
+            SonoBusStreamer-macOS-Universal-Standalone.zip
+
   windows-vst3:
+    needs: macos
     runs-on: windows-2022
     steps:
       - name: Check out source
@@ -18,17 +60,25 @@ jobs:
       - name: Configure x64 build
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DUniversalBinary=OFF
 
-      - name: Build VST3
+      - name: Build SonoBus VST3
         run: cmake --build build --config Release --target SonoBus_VST3 --parallel 4
 
-      - name: Package VST3
-        shell: pwsh
-        run: Compress-Archive -Path build/SonoBus_artefacts/Release/VST3/SonoBus.vst3 -DestinationPath SonoBus-Windows-x64-VST3.zip -Force
+      - name: Build SonoBus Streamer VST3
+        run: cmake --build build --config Release --target SonoBusStreamer_VST3 --parallel 4
 
-      - name: Attach Windows VST3 to beta release
+      - name: Package VST3 products
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "build/SonoBus_artefacts/Release/VST3/SonoBus.vst3" -DestinationPath "SonoBus-Windows-x64-VST3.zip" -Force
+          Compress-Archive -Path "build/SonoBusStreamer_artefacts/Release/VST3/SonoBus Streamer.vst3" -DestinationPath "SonoBusStreamer-Windows-x64-VST3.zip" -Force
+
+      - name: Publish Windows assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: SonoBus-Windows-x64-VST3.zip
           prerelease: true
+          overwrite_files: true
           fail_on_unmatched_files: true
+          files: |
+            SonoBus-Windows-x64-VST3.zip
+            SonoBusStreamer-Windows-x64-VST3.zip
