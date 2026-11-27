@@ -61,8 +61,18 @@ public:
         receiveButton.setButtonText(TRANS("Stream to Outputs"));
         clearRoutesButton.setButtonText(TRANS("Clear all routes"));
         sendButton.onClick = [this] { sendMode = true; updateGridLayout(); };
-        receiveButton.onClick = [this] { sendMode = false; updateGridLayout(); };
+        receiveButton.onClick = [this] { sendMode = false; refreshReceiveRows(); updateGridLayout(); };
         clearRoutesButton.onClick = [this] { processor.clearPatchbayRoutes(); repaint(); };
+        receiveSourceSelector.setTextWhenNothingSelected(TRANS("No remote streams"));
+        receiveSourceSelector.setTooltip(TRANS("Select the participant stream routed to the interface outputs"));
+        receiveSourceSelector.onChange = [this] {
+            if (updatingSourceSelector)
+                return;
+            const int selectedIndex = receiveSourceSelector.getSelectedId() - 1;
+            selectedSourceKey = selectedIndex >= 0 ? processor.getRemotePeerPatchbayKey(selectedIndex) : String();
+            refreshReceiveRows();
+            updateGridLayout();
+        };
         streamSizeMinus.setButtonText("-");
         streamSizePlus.setButtonText("+");
         streamSizeMinus.setTooltip(TRANS("Remove one stream channel"));
@@ -72,6 +82,7 @@ public:
         addAndMakeVisible(sendButton);
         addAndMakeVisible(receiveButton);
         addAndMakeVisible(clearRoutesButton);
+        addAndMakeVisible(receiveSourceSelector);
         addAndMakeVisible(streamSizeMinus);
         addAndMakeVisible(streamSizePlus);
         startTimerHz(20);
@@ -106,10 +117,21 @@ public:
 
         g.setColour(textColour.withAlpha(0.7f));
         g.setFont(14.0f);
-        g.drawText(sendMode ? TRANS("Interface inputs") : TRANS("Remote streams"), 12, 54, labelWidth - 20, 22, Justification::centredLeft);
+        g.drawText(sendMode ? TRANS("Interface inputs") : TRANS("Selected stream"), 12, 54, labelWidth - 20, 22, Justification::centredLeft);
         g.drawText(sendMode ? TRANS("Input meter") : TRANS("Stream meter"), 12, 77, labelWidth - 20, 20, Justification::centredLeft);
         g.drawText(sendMode ? TRANS("Stream outputs") : TRANS("Interface outputs"), gridX, 54, sendMode ? 132 : columns * cellWidth, 22, sendMode ? Justification::centredLeft : Justification::centred);
         g.drawText(sendMode ? TRANS("Stream meter") : TRANS("Output meter"), gridX, 77, columns * cellWidth, 20, Justification::centred);
+
+        if (!sendMode) {
+            g.setColour(Colour(0xffc6a4e8));
+            g.setFont(Font(10.0f, Font::bold));
+            const int selectedPeer = findSelectedSourcePeer();
+            const String activeSource = selectedPeer >= 0
+                ? TRANS("PATCHING: ") + processor.getRemotePeerUserName(selectedPeer)
+                    + " / " + String(processor.getRemotePeerRecvChannelCount(selectedPeer)) + TRANS(" ch")
+                : TRANS("PATCHING: no remote stream selected");
+            g.drawFittedText(activeSource, 12, 128, labelWidth - 24, 16, Justification::centredLeft, 1);
+        }
 
         for (int column = 0; column < columns; ++column) {
             auto cell = Rectangle<int>(gridX + column * cellWidth, gridY, cellWidth, rows * rowHeight);
@@ -200,6 +222,8 @@ public:
         sendButton.setBounds(12, 8, 180, 34);
         receiveButton.setBounds(200, 8, 200, 34);
         clearRoutesButton.setBounds(410, 8, 170, 34);
+        receiveSourceSelector.setBounds(12, 98, labelWidth - 24, 28);
+        receiveSourceSelector.setVisible(!sendMode);
         streamSizeMinus.setBounds(labelWidth + 134, 50, 28, 28);
         streamSizePlus.setBounds(labelWidth + 166, 50, 28, 28);
         streamSizeMinus.setVisible(sendMode);
@@ -211,11 +235,15 @@ public:
 private:
     static constexpr int labelWidth = 190, cellWidth = 52, rowHeight = 40, headerHeight = 150;
     TextButton sendButton, receiveButton, clearRoutesButton;
+    ComboBox receiveSourceSelector;
     TextButton streamSizeMinus, streamSizePlus;
     SonobusAudioProcessor& processor;
     bool sendMode = true;
+    bool updatingSourceSelector = false;
+    String selectedSourceKey;
     int contentWidth = 650, contentHeight = 400;
     Array<int> rowPeers, rowChannels;
+    StringArray sourceKeys, sourceLabels;
 
     void changeStreamSize(int delta)
     {
@@ -238,14 +266,68 @@ private:
     {
         rowPeers.clear();
         rowChannels.clear();
+        refreshSourceSelector();
         if (sendMode)
             return;
-        const int peers = jmin(MAX_PEERS, processor.getNumberRemotePeers());
-        for (int peer = 0; peer < peers; ++peer)
-            for (int channel = 0; channel < jmin(MAX_CHANNELS, processor.getRemotePeerRecvChannelCount(peer)); ++channel) {
+        const int peer = findSelectedSourcePeer();
+        if (peer < 0)
+            return;
+        for (int channel = 0; channel < jmin(MAX_CHANNELS, processor.getRemotePeerRecvChannelCount(peer)); ++channel) {
                 rowPeers.add(peer);
                 rowChannels.add(channel);
-            }
+        }
+    }
+
+    void refreshSourceSelector()
+    {
+        StringArray nextKeys, nextLabels;
+        const int peers = jmin(MAX_PEERS, processor.getNumberRemotePeers());
+        for (int peer = 0; peer < peers; ++peer) {
+            nextKeys.add(processor.getRemotePeerPatchbayKey(peer));
+            String label = processor.getRemotePeerUserName(peer);
+            if (label.isEmpty())
+                label = TRANS("Unknown participant");
+            label << " (" << processor.getRemotePeerRecvChannelCount(peer) << TRANS(" channels)");
+            nextLabels.add(label);
+        }
+
+        bool changed = nextKeys.size() != sourceKeys.size() || nextLabels.size() != sourceLabels.size();
+        for (int i = 0; !changed && i < nextKeys.size(); ++i)
+            changed = nextKeys[i] != sourceKeys[i] || nextLabels[i] != sourceLabels[i];
+        if (!changed)
+            return;
+
+        const String previousSelection = selectedSourceKey;
+        sourceKeys = nextKeys;
+        sourceLabels = nextLabels;
+        updatingSourceSelector = true;
+        receiveSourceSelector.clear(dontSendNotification);
+        for (int i = 0; i < sourceLabels.size(); ++i)
+            receiveSourceSelector.addItem(sourceLabels[i], i + 1);
+
+        int selectedIndex = sourceKeys.indexOf(previousSelection);
+        if (selectedIndex < 0 && sourceKeys.size() > 0)
+            selectedIndex = 0;
+        if (selectedIndex >= 0) {
+            selectedSourceKey = sourceKeys[selectedIndex];
+            receiveSourceSelector.setSelectedId(selectedIndex + 1, dontSendNotification);
+        } else {
+            selectedSourceKey.clear();
+            receiveSourceSelector.setSelectedId(0, dontSendNotification);
+        }
+        receiveSourceSelector.setEnabled(sourceKeys.size() > 0);
+        updatingSourceSelector = false;
+    }
+
+    int findSelectedSourcePeer() const
+    {
+        if (selectedSourceKey.isEmpty())
+            return -1;
+        const int peers = jmin(MAX_PEERS, processor.getNumberRemotePeers());
+        for (int peer = 0; peer < peers; ++peer)
+            if (processor.getRemotePeerPatchbayKey(peer) == selectedSourceKey)
+                return peer;
+        return -1;
     }
 
     int getColumnCount() const
@@ -360,8 +442,9 @@ private:
     void timerCallback() override
     {
         const int oldRows = rowPeers.size();
+        const String oldSelection = selectedSourceKey;
         refreshReceiveRows();
-        if (!sendMode && oldRows != rowPeers.size())
+        if (!sendMode && (oldRows != rowPeers.size() || oldSelection != selectedSourceKey))
             updateGridLayout();
         else
             repaint();
@@ -403,8 +486,8 @@ void SonobusAudioProcessorEditor::configEditor(TextEditor *editor, bool passwd)
 
 
 //==============================================================================
-SonobusAudioProcessorEditor::SonobusAudioProcessorEditor (SonobusAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p),  sonoLookAndFeel(p.getUseUniversalFont()), sonoSliderLNF(13), smallLNF(14), teensyLNF(11), panSliderLNF(12)
+SonobusAudioProcessorEditor::SonobusAudioProcessorEditor (SonobusAudioProcessor& p, bool streamerMode_)
+    : AudioProcessorEditor (&p), processor (p), streamerMode(streamerMode_), sonoLookAndFeel(p.getUseUniversalFont()), sonoSliderLNF(13), smallLNF(14), teensyLNF(11), panSliderLNF(12)
 {
     if (p.getUseUniversalFont()) {
 #if JUCE_ANDROID
@@ -1295,8 +1378,10 @@ SonobusAudioProcessorEditor::SonobusAudioProcessorEditor (SonobusAudioProcessor&
     mTopLevelContainer->addAndMakeVisible(mMainPersonImage.get());
     mTopLevelContainer->addAndMakeVisible(mMainGroupImage.get());
     mTopLevelContainer->addChildComponent(mPeerRecImage.get());
-    mTopLevelContainer->addAndMakeVisible(mPeerLayoutFullButton.get());
-    mTopLevelContainer->addAndMakeVisible(mPeerLayoutMinimalButton.get());
+    if (!streamerMode)
+        mTopLevelContainer->addAndMakeVisible(mPeerLayoutFullButton.get());
+    if (!streamerMode)
+        mTopLevelContainer->addAndMakeVisible(mPeerLayoutMinimalButton.get());
 
 
     mTopLevelContainer->addAndMakeVisible(mDrySlider.get());
@@ -1320,11 +1405,13 @@ SonobusAudioProcessorEditor::SonobusAudioProcessorEditor (SonobusAudioProcessor&
     mTopLevelContainer->addChildComponent(mSetupAudioButton.get());
 
     
-    mTopLevelContainer->addAndMakeVisible(mMetButtonBg.get());
-    mTopLevelContainer->addAndMakeVisible(mFileAreaBg.get());
-    mTopLevelContainer->addAndMakeVisible(mMetEnableButton.get());
-    mTopLevelContainer->addAndMakeVisible(mMetConfigButton.get());
-    mTopLevelContainer->addAndMakeVisible(mEffectsButton.get());
+    if (!streamerMode) {
+        mTopLevelContainer->addAndMakeVisible(mMetButtonBg.get());
+        mTopLevelContainer->addAndMakeVisible(mFileAreaBg.get());
+        mTopLevelContainer->addAndMakeVisible(mMetEnableButton.get());
+        mTopLevelContainer->addAndMakeVisible(mMetConfigButton.get());
+        mTopLevelContainer->addAndMakeVisible(mEffectsButton.get());
+    }
     mTopLevelContainer->addAndMakeVisible(mBufferMinButton.get());
 
     mMetContainer->addAndMakeVisible(mMetLevelSlider.get());
@@ -1354,7 +1441,8 @@ SonobusAudioProcessorEditor::SonobusAudioProcessorEditor (SonobusAudioProcessor&
     
 
     mTopLevelContainer->addAndMakeVisible(mChatButton.get());
-    mTopLevelContainer->addAndMakeVisible(mSoundboardButton.get());
+    if (!streamerMode)
+        mTopLevelContainer->addAndMakeVisible(mSoundboardButton.get());
 
     
 
@@ -1363,16 +1451,19 @@ SonobusAudioProcessorEditor::SonobusAudioProcessorEditor (SonobusAudioProcessor&
 
     if (mRecordingButton) {
         mTopLevelContainer->addAndMakeVisible(mRecordingButton.get());
-        mTopLevelContainer->addAndMakeVisible(mFileBrowseButton.get());
+        if (!streamerMode)
+            mTopLevelContainer->addAndMakeVisible(mFileBrowseButton.get());
         mTopLevelContainer->addAndMakeVisible(mFileRecordingLabel.get());
-        mTopLevelContainer->addChildComponent(mPlayButton.get());
-        mTopLevelContainer->addChildComponent(mSkipBackButton.get());
-        mTopLevelContainer->addChildComponent(mLoopButton.get());
+        if (!streamerMode) mTopLevelContainer->addChildComponent(mPlayButton.get());
+        if (!streamerMode) mTopLevelContainer->addChildComponent(mSkipBackButton.get());
+        if (!streamerMode) mTopLevelContainer->addChildComponent(mLoopButton.get());
         mTopLevelContainer->addChildComponent(mDismissTransportButton.get());
-        mTopLevelContainer->addChildComponent(mWaveformThumbnail.get());
-        mTopLevelContainer->addChildComponent(mPlaybackSlider.get());
-        mTopLevelContainer->addChildComponent(mFileSendAudioButton.get());
-        mTopLevelContainer->addChildComponent(mFileMenuButton.get());
+        if (!streamerMode) {
+            mTopLevelContainer->addChildComponent(mWaveformThumbnail.get());
+            mTopLevelContainer->addChildComponent(mPlaybackSlider.get());
+            mTopLevelContainer->addChildComponent(mFileSendAudioButton.get());
+            mTopLevelContainer->addChildComponent(mFileMenuButton.get());
+        }
     }
 
 
@@ -1382,10 +1473,12 @@ SonobusAudioProcessorEditor::SonobusAudioProcessorEditor (SonobusAudioProcessor&
     mTopLevelContainer->addAndMakeVisible(mOutGainLabel.get());
     mTopLevelContainer->addAndMakeVisible(inputMeter.get());
     mTopLevelContainer->addAndMakeVisible(outputMeter.get());
-    mTopLevelContainer->addAndMakeVisible (mInMixerButton.get());
+    if (!streamerMode)
+        mTopLevelContainer->addAndMakeVisible (mInMixerButton.get());
 
 
-    mTopLevelContainer->addAndMakeVisible (mSendChannelsChoice.get());
+    if (!streamerMode)
+        mTopLevelContainer->addAndMakeVisible (mSendChannelsChoice.get());
     //addAndMakeVisible (mSendChannelsLabel.get());
 
 
@@ -1416,6 +1509,9 @@ SonobusAudioProcessorEditor::SonobusAudioProcessorEditor (SonobusAudioProcessor&
 
     inChannels = processor.getTotalNumInputChannels(); // processor.getMainBusNumInputChannels();
     outChannels = processor.getMainBusNumOutputChannels();
+
+    if (streamerMode)
+        processor.setPeerDisplayMode(SonobusAudioProcessor::PeerDisplayModeMinimal);
     
     updateLayout();
     
@@ -4798,9 +4894,11 @@ void SonobusAudioProcessorEditor::updateLayout()
     inGainBox.flexDirection = FlexBox::Direction::row;
     //inGainBox.items.add(FlexItem(minKnobWidth, minitemheight, *mInGainSlider).withMargin(0).withFlex(1));
     //inGainBox.items.add(FlexItem(choicew, minitemheight, *mSendChannelsLabel).withMargin(0).withFlex(0.5));
-    inGainBox.items.add(FlexItem(2, 6).withMargin(0).withFlex(0.1));
-    inGainBox.items.add(FlexItem(choicew, minitemheight, *mSendChannelsChoice).withMargin(0).withFlex(1).withMaxWidth(160));
-    inGainBox.items.add(FlexItem(2, 6).withMargin(0).withFlex(0.1));
+    if (!streamerMode) {
+        inGainBox.items.add(FlexItem(2, 6).withMargin(0).withFlex(0.1));
+        inGainBox.items.add(FlexItem(choicew, minitemheight, *mSendChannelsChoice).withMargin(0).withFlex(1).withMaxWidth(160));
+        inGainBox.items.add(FlexItem(2, 6).withMargin(0).withFlex(0.1));
+    }
 
     dryBox.items.clear();
     dryBox.flexDirection = FlexBox::Direction::row;
@@ -4823,8 +4921,10 @@ void SonobusAudioProcessorEditor::updateLayout()
     inputPannerBox.items.clear();
     inputPannerBox.flexDirection = FlexBox::Direction::row;
     inputPannerBox.items.add(FlexItem(2, 6).withMargin(0).withFlex(0.2));
-    inputPannerBox.items.add(FlexItem(inmixw, minitemheight, *mInMixerButton).withMargin(0).withFlex(1).withMaxWidth(160 - mutew - 3));
-    inputPannerBox.items.add(FlexItem(3, 6).withMargin(0).withFlex(0));
+    if (!streamerMode) {
+        inputPannerBox.items.add(FlexItem(inmixw, minitemheight, *mInMixerButton).withMargin(0).withFlex(1).withMaxWidth(160 - mutew - 3));
+        inputPannerBox.items.add(FlexItem(3, 6).withMargin(0).withFlex(0));
+    }
     inputPannerBox.items.add(FlexItem(mutew, minitemheight, *mInMuteButton).withMargin(0).withFlex(0.0));
     //inputPannerBox.items.add(FlexItem(mutew, minitemheight, *mInEffectsButton).withMargin(0).withFlex(0));
     inputPannerBox.items.add(FlexItem(2, 6).withMargin(0).withFlex(0.2));
@@ -4842,7 +4942,8 @@ void SonobusAudioProcessorEditor::updateLayout()
     inputButtonBox.items.add(FlexItem(2, 6).withMargin(0).withFlex(0.2));
     //inputButtonBox.items.add(FlexItem(mutew, minitemheight, *mMonDelayButton).withMargin(0).withFlex(0) ); //.withMaxWidth(maxPannerWidth));
     inputButtonBox.items.add(FlexItem(3, 4));
-    inputButtonBox.items.add(FlexItem(toolwidth, minitemheight, *mSoundboardButton).withMargin(0).withFlex(0) ); //.withMaxWidth(maxPannerWidth));
+    if (!streamerMode)
+        inputButtonBox.items.add(FlexItem(toolwidth, minitemheight, *mSoundboardButton).withMargin(0).withFlex(0) ); //.withMaxWidth(maxPannerWidth));
     inputButtonBox.items.add(FlexItem(7, 6).withMargin(0).withFlex(0));
     inputButtonBox.items.add(FlexItem(toolwidth, minitemheight, *mChatButton).withMargin(0).withFlex(0) ); //.withMaxWidth(maxPannerWidth));
     inputButtonBox.items.add(FlexItem(7, 6).withMargin(0).withFlex(0));
@@ -4868,7 +4969,8 @@ void SonobusAudioProcessorEditor::updateLayout()
     outputMainBox.items.add(FlexItem(7, 6).withMargin(0).withFlex(0));
     outputMainBox.items.add(FlexItem(toolwidth, minitemheight, *mBufferMinButton).withMargin(0).withFlex(0));
     outputMainBox.items.add(FlexItem(4, 6).withMargin(0).withFlex(0));
-    outputMainBox.items.add(FlexItem(toolwidth, minitemheight, *mEffectsButton).withMargin(0).withFlex(0));
+    if (!streamerMode)
+        outputMainBox.items.add(FlexItem(toolwidth, minitemheight, *mEffectsButton).withMargin(0).withFlex(0));
     outputMainBox.items.add(FlexItem(4, 6).withMargin(0).withFlex(0));
     outputMainBox.items.add(FlexItem(minSliderWidth, minitemheight, outBox).withMargin(0).withFlex(1)); //.withMaxWidth(isNarrow ? 160 : 120));
     outputMainBox.items.add(FlexItem(4, 6).withMargin(0).withFlex(0));
@@ -4912,8 +5014,10 @@ void SonobusAudioProcessorEditor::updateLayout()
     mainGroupLayoutBox.items.clear();
     mainGroupLayoutBox.flexDirection = FlexBox::Direction::row;
     mainGroupLayoutBox.items.add(FlexItem(1, 4));
-    mainGroupLayoutBox.items.add(FlexItem(toolwidth, minitemheight, *mPeerLayoutMinimalButton).withMargin(0).withFlex(0));
-    mainGroupLayoutBox.items.add(FlexItem(toolwidth, minitemheight, *mPeerLayoutFullButton).withMargin(0).withFlex(0));
+    if (!streamerMode) {
+        mainGroupLayoutBox.items.add(FlexItem(toolwidth, minitemheight, *mPeerLayoutMinimalButton).withMargin(0).withFlex(0));
+        mainGroupLayoutBox.items.add(FlexItem(toolwidth, minitemheight, *mPeerLayoutFullButton).withMargin(0).withFlex(0));
+    }
     //mainGroupLayoutBox.items.add(FlexItem(3, 4));
     //mainGroupLayoutBox.items.add(FlexItem(toolwidth, minitemheight, *mChatButton).withMargin(0).withFlex(0) ); //.withMaxWidth(maxPannerWidth));
     mainGroupLayoutBox.items.add(FlexItem(4, 4));
@@ -5095,8 +5199,10 @@ void SonobusAudioProcessorEditor::updateLayout()
     toolbarBox.items.add(FlexItem(2, 6).withMargin(0).withFlex(0.1).withMaxWidth(8));
     toolbarBox.items.add(FlexItem(toolwidth, minitemheight, *mMainPushToTalkButton).withMargin(0).withFlex(0));
     toolbarBox.items.add(FlexItem(2, 6).withMargin(0).withFlex(0.1));
-    toolbarBox.items.add(FlexItem(toolwidth, minitemheight, *mMetEnableButton).withMargin(0).withFlex(0).withMaxHeight(minitemheight+2).withAlignSelf(FlexItem::AlignSelf::center));
-    toolbarBox.items.add(FlexItem(36, minitemheight, *mMetConfigButton).withMargin(0).withFlex(0).withMaxHeight(minitemheight+2).withAlignSelf(FlexItem::AlignSelf::center));
+    if (!streamerMode) {
+        toolbarBox.items.add(FlexItem(toolwidth, minitemheight, *mMetEnableButton).withMargin(0).withFlex(0).withMaxHeight(minitemheight+2).withAlignSelf(FlexItem::AlignSelf::center));
+        toolbarBox.items.add(FlexItem(36, minitemheight, *mMetConfigButton).withMargin(0).withFlex(0).withMaxHeight(minitemheight+2).withAlignSelf(FlexItem::AlignSelf::center));
+    }
     toolbarBox.items.add(FlexItem(2, 5).withMargin(0).withFlex(0.1));
 
    
@@ -5155,8 +5261,10 @@ void SonobusAudioProcessorEditor::updateLayout()
 #endif
 
         toolbarBox.items.add(FlexItem(toolwidth, minitemheight, *mRecordingButton).withMargin(0).withFlex(0));
-        toolbarBox.items.add(FlexItem(2, 6).withMargin(0).withFlex(0.1).withMaxWidth(6));
-        toolbarBox.items.add(FlexItem(toolwidth, minitemheight, *mFileBrowseButton).withMargin(0).withFlex(0));
+        if (!streamerMode) {
+            toolbarBox.items.add(FlexItem(2, 6).withMargin(0).withFlex(0.1).withMaxWidth(6));
+            toolbarBox.items.add(FlexItem(toolwidth, minitemheight, *mFileBrowseButton).withMargin(0).withFlex(0));
+        }
     }
 
     if (!isNarrow) {
@@ -5178,7 +5286,7 @@ void SonobusAudioProcessorEditor::updateLayout()
     mainBox.items.add(FlexItem(120, 50, *mMainViewport).withMargin(3).withFlex(3)); minheight += 50 + 6;
     mainBox.items.add(FlexItem(10, 2).withFlex(0)); minheight += 2;
 
-    if (!mCurrentAudioFile.isEmpty()) {
+    if (!streamerMode && !mCurrentAudioFile.isEmpty()) {
         mainBox.items.add(FlexItem(4, 5).withMargin(0).withFlex(0)); minheight += 5;
         if (isNarrow) {
             mainBox.items.add(FlexItem(100, 2*minitemheight + 3, transportVBox).withMargin(2).withFlex(0)); minheight += 2*minitemheight + 3;

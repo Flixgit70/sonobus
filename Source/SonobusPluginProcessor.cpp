@@ -5089,6 +5089,19 @@ String SonobusAudioProcessor::getRemotePeerUserName(int index) const
     return "";
 }
 
+String SonobusAudioProcessor::getRemotePeerPatchbayKey(int index) const
+{
+    const ScopedReadLock sl (mCoreLock);
+    if (index >= 0 && index < mRemotePeers.size()) {
+        const auto* remote = mRemotePeers.getUnchecked(index);
+        const String endpoint = remote->endpoint
+            ? remote->endpoint->ipaddr + ":" + String(remote->endpoint->port)
+            : String("unknown");
+        return endpoint + "/" + String(remote->remoteSourceId) + "/" + String(remote->ourId);
+    }
+    return {};
+}
+
 bool SonobusAudioProcessor::isRemotePeerUserInGroup(const String & name) const
 {
     const ScopedReadLock sl (mCoreLock);
@@ -8684,7 +8697,11 @@ bool SonobusAudioProcessor::hasEditor() const
 
 AudioProcessorEditor* SonobusAudioProcessor::createEditor()
 {
+#if defined(SONOBUS_STREAMER_VARIANT) && SONOBUS_STREAMER_VARIANT
+    return new SonobusAudioProcessorEditor (*this, true);
+#else
     return new SonobusAudioProcessorEditor (*this);
+#endif
 }
 
 AudioProcessorValueTreeState& SonobusAudioProcessor::getValueTreeState()

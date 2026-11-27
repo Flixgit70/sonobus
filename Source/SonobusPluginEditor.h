@@ -57,7 +57,7 @@ public ChannelGroupsView::Listener,
 public PeersContainerView::Listener
 {
 public:
-    SonobusAudioProcessorEditor (SonobusAudioProcessor&);
+    SonobusAudioProcessorEditor (SonobusAudioProcessor&, bool streamerMode = false);
     ~SonobusAudioProcessorEditor();
 
     //==============================================================================
@@ -257,6 +257,7 @@ private:
     // This reference is provided as a quick way for your editor to
     // access the processor object that created it.
     SonobusAudioProcessor& processor;
+    const bool streamerMode;
 
     SonoLookAndFeel sonoLookAndFeel;
     SonoBigTextLookAndFeel sonoSliderLNF;

@@ -140,7 +140,7 @@ set (MacPList "<plist version=\"1.0\">
 # the formats specified by the FORMATS arguments. This function accepts many optional arguments.
 # Check the readme at `docs/CMake API.md` in the JUCE repo for the full list.
 
-function(sono_add_custom_plugin_target target_name product_name formats is_instrument plugincode)
+function(sono_add_custom_plugin_target target_name product_name formats is_instrument plugincode bundle_id streamer_variant)
 
    if (is_instrument)
         set (vst3cats Instrument Network)
@@ -156,7 +156,7 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
         NEEDS_MIDI_OUTPUT TRUE
         EDITOR_WANTS_KEYBOARD_FOCUS TRUE
         COMPANY_NAME "Sonosaurus"
-        BUNDLE_ID "com.Sonosaurus.SonoBus"
+        BUNDLE_ID "${bundle_id}"
         MICROPHONE_PERMISSION_ENABLED TRUE
         
         ICON_BIG "images/sonobus_icon_mac_1024.png"
@@ -197,6 +197,12 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
         USE_CODEC_OPUS=1
         AOO_TIMEFILTER_CHECK=0
         AOO_STATIC)
+
+    if (streamer_variant)
+        list (APPEND PLAT_COMPILE_DEFS SONOBUS_STREAMER_VARIANT=1)
+    else()
+        list (APPEND PLAT_COMPILE_DEFS SONOBUS_STREAMER_VARIANT=0)
+    endif()
 
     set(PlatSourceFiles
         Source/CrossPlatformUtils.h
@@ -630,11 +636,15 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
 endfunction()
 
 # most of the targets
-sono_add_custom_plugin_target(SonoBus SonoBus "${FormatsToBuild}" FALSE  "NBus")
+sono_add_custom_plugin_target(SonoBus SonoBus "${FormatsToBuild}" FALSE "NBus" "com.Sonosaurus.SonoBus" FALSE)
+
+# A separate product ID lets DAWs load the lean interface next to SonoBus.
+# It deliberately shares SonoBus' AOO protocol, codecs and stream behavior.
+sono_add_custom_plugin_target(SonoBusStreamer "SonoBus Streamer" "${FormatsToBuild}" FALSE "Stmr" "com.Sonosaurus.SonoBus.Streamer" TRUE)
 
 # Mobile targets
 #sono_add_custom_plugin_target(SonoBusMobile "AUv3 Standalone" FALSE "NBus")
 
 # add VSTi target
-sono_add_custom_plugin_target(SonoBusInst "SonoBusInstrument" "VST3" TRUE  "IBus")
+sono_add_custom_plugin_target(SonoBusInst "SonoBusInstrument" "VST3" TRUE "IBus" "com.Sonosaurus.SonoBus" FALSE)
 

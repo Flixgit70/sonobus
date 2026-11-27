@@ -365,6 +365,7 @@ public:
     
     void setRemotePeerUserName(int index, const String & name);
     String getRemotePeerUserName(int index) const;
+    String getRemotePeerPatchbayKey(int index) const;
 
 
     int getRemotePeerChannelGroupCount(int index) const;
