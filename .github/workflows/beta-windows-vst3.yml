@@ -33,13 +33,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: SonoBus 1.7.2 Patchbay Beta 4
+          name: SonoBus 1.7.2 Patchbay Beta 5
           body: |
-            SonoBus 1.7.2 Patchbay Beta 4
+            SonoBus 1.7.2 Patchbay Beta 5
 
             - Adds SonoBus Streamer as a separate VST3 and Standalone product, compatible with SonoBus network streams.
             - The Stream to Outputs patchbay now lets you select the incoming participant stream explicitly and shows which stream is being patched.
-            - Fixes sending audio from active interface inputs beyond the first two channels.
+            - Fixes patchbay routing from additional VST3 inputs when host input and output buses share process-buffer channels.
+            - Lets you assign and save custom labels for interface inputs and outputs in the patchbay.
             - Includes universal macOS VST3 and Standalone builds for SonoBus and SonoBus Streamer.
             - Windows x64 VST3 builds are attached after the Windows workflow finishes.
             - The iOS Streamer product is not included in this beta.

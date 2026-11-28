@@ -658,6 +658,10 @@ public:
     void setPatchbayReceiveRouteGain(int peerIndex, int streamChannel, int outputChannel, float gain);
     void clearPatchbayRoutes();
     int getPatchbaySendChannelCount() const;
+    String getPatchbayInputLabel(int channel) const;
+    void setPatchbayInputLabel(int channel, const String& label);
+    String getPatchbayOutputLabel(int channel) const;
+    void setPatchbayOutputLabel(int channel, const String& label);
 
     int getActiveSendChannelCount() const { return mActiveSendChannels; }
 
@@ -1195,6 +1199,9 @@ private:
     std::atomic<float> mPatchbayReceiveInputGains[MAX_PEERS][MAX_CHANNELS];
     std::atomic<float> mPatchbayReceiveOutputGains[MAX_CHANNELS];
     std::atomic<float> mPatchbayReceiveRouteGains[MAX_PEERS][MAX_CHANNELS][MAX_CHANNELS];
+    CriticalSection mPatchbayLabelsLock;
+    String mPatchbayInputLabels[MAX_CHANNELS];
+    String mPatchbayOutputLabels[MAX_CHANNELS];
     
     
     void notifySendThread() {

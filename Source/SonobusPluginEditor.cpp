@@ -59,6 +59,8 @@ public:
     {
         sendButton.setButtonText(TRANS("Inputs to Stream"));
         receiveButton.setButtonText(TRANS("Stream to Outputs"));
+        sendButton.setTooltip(TRANS("Click an input channel name to edit it; clear the name to restore its default."));
+        receiveButton.setTooltip(TRANS("Click an output channel name to edit it; clear the name to restore its default."));
         clearRoutesButton.setButtonText(TRANS("Clear all routes"));
         sendButton.onClick = [this] { sendMode = true; updateGridLayout(); };
         receiveButton.onClick = [this] { sendMode = false; refreshReceiveRows(); updateGridLayout(); };
@@ -85,6 +87,12 @@ public:
         addAndMakeVisible(receiveSourceSelector);
         addAndMakeVisible(streamSizeMinus);
         addAndMakeVisible(streamSizePlus);
+        labelEditor.setMultiLine(false);
+        labelEditor.setReturnKeyStartsNewLine(false);
+        labelEditor.setSelectAllWhenFocused(true);
+        labelEditor.onReturnKey = [this] { finishLabelEdit(); };
+        labelEditor.onFocusLost = [this] { finishLabelEdit(); };
+        addChildComponent(labelEditor);
         startTimerHz(20);
         updateGridLayout();
     }
@@ -142,8 +150,14 @@ public:
             drawMeter(g, getDestinationMeter(), column, gridX + column * cellWidth + 5, 119, cellWidth - 10, 7);
             g.setColour(textColour);
             g.setFont(12.0f);
-            String destinationLabel = sendMode ? TRANS("Stream") : TRANS("Out");
-            destinationLabel << " " << (column + 1);
+            String destinationLabel;
+            if (sendMode) {
+                destinationLabel = TRANS("Stream") + String(" ") + String(column + 1);
+            } else {
+                destinationLabel = processor.getPatchbayOutputLabel(column);
+                if (destinationLabel.isEmpty())
+                    destinationLabel = TRANS("Out") + String(" ") + String(column + 1);
+            }
             g.drawFittedText(destinationLabel, gridX + column * cellWidth, 94, cellWidth, 20, Justification::centred, 1);
             g.setFont(10.0f);
             g.drawText(gainLabel(getDestinationGain(column)), gridX + column * cellWidth, 128, cellWidth, 12, Justification::centred);
@@ -184,6 +198,25 @@ public:
 
     void mouseDown(const MouseEvent& event) override
     {
+        if (event.y >= headerHeight && event.y < headerHeight + getRowCount() * rowHeight && event.x < labelWidth) {
+            const int labelRow = (event.y - headerHeight) / rowHeight;
+            if (sendMode && labelRow >= 0 && labelRow < getRowCount()) {
+                beginLabelEdit(false, labelRow, { 8, headerHeight + labelRow * rowHeight + 1, labelWidth - 20, 20 },
+                               processor.getPatchbayInputLabel(labelRow));
+                return;
+            }
+        }
+
+        if (!sendMode && event.y >= 94 && event.y < 114 && event.x >= labelWidth) {
+            const int output = (event.x - labelWidth) / cellWidth;
+            if (output >= 0 && output < getColumnCount()) {
+                beginLabelEdit(true, output,
+                               { labelWidth + output * cellWidth + 2, 94, cellWidth - 4, 20 },
+                               processor.getPatchbayOutputLabel(output));
+                return;
+            }
+        }
+
         const int row = (event.y - headerHeight) / rowHeight;
         const int column = (event.x - labelWidth) / cellWidth;
         if (event.y < headerHeight || event.x < labelWidth || row < 0 || row >= getRowCount() || column < 0 || column >= getColumnCount())
@@ -237,6 +270,7 @@ private:
     TextButton sendButton, receiveButton, clearRoutesButton;
     ComboBox receiveSourceSelector;
     TextButton streamSizeMinus, streamSizePlus;
+    TextEditor labelEditor;
     SonobusAudioProcessor& processor;
     bool sendMode = true;
     bool updatingSourceSelector = false;
@@ -244,6 +278,35 @@ private:
     int contentWidth = 650, contentHeight = 400;
     Array<int> rowPeers, rowChannels;
     StringArray sourceKeys, sourceLabels;
+    int editingLabelChannel = -1;
+    bool editingOutputLabel = false;
+
+    void beginLabelEdit(bool outputLabel, int channel, Rectangle<int> bounds, const String& currentLabel)
+    {
+        editingOutputLabel = outputLabel;
+        editingLabelChannel = channel;
+        labelEditor.setText(currentLabel, dontSendNotification);
+        labelEditor.setBounds(bounds);
+        labelEditor.setVisible(true);
+        labelEditor.toFront(true);
+        labelEditor.grabKeyboardFocus();
+        labelEditor.selectAll();
+    }
+
+    void finishLabelEdit()
+    {
+        if (editingLabelChannel < 0)
+            return;
+        const int channel = editingLabelChannel;
+        editingLabelChannel = -1;
+        const String label = labelEditor.getText().trim();
+        labelEditor.setVisible(false);
+        if (editingOutputLabel)
+            processor.setPatchbayOutputLabel(channel, label);
+        else
+            processor.setPatchbayInputLabel(channel, label);
+        repaint();
+    }
 
     void changeStreamSize(int delta)
     {

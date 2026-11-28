@@ -4723,6 +4723,44 @@ int SonobusAudioProcessor::getPatchbaySendChannelCount() const
     return jlimit(1, MAX_CHANNELS, count);
 }
 
+String SonobusAudioProcessor::getPatchbayInputLabel(int channel) const
+{
+    if (channel < 0 || channel >= MAX_CHANNELS)
+        return {};
+    const ScopedLock lock(mPatchbayLabelsLock);
+    return mPatchbayInputLabels[channel];
+}
+
+void SonobusAudioProcessor::setPatchbayInputLabel(int channel, const String& label)
+{
+    if (channel < 0 || channel >= MAX_CHANNELS)
+        return;
+    {
+        const ScopedLock lock(mPatchbayLabelsLock);
+        mPatchbayInputLabels[channel] = label.substring(0, 48).trim();
+    }
+    updateHostDisplay();
+}
+
+String SonobusAudioProcessor::getPatchbayOutputLabel(int channel) const
+{
+    if (channel < 0 || channel >= MAX_CHANNELS)
+        return {};
+    const ScopedLock lock(mPatchbayLabelsLock);
+    return mPatchbayOutputLabels[channel];
+}
+
+void SonobusAudioProcessor::setPatchbayOutputLabel(int channel, const String& label)
+{
+    if (channel < 0 || channel >= MAX_CHANNELS)
+        return;
+    {
+        const ScopedLock lock(mPatchbayLabelsLock);
+        mPatchbayOutputLabels[channel] = label.substring(0, 48).trim();
+    }
+    updateHostDisplay();
+}
+
 
 void SonobusAudioProcessor::adjustRemoteSendMatrix(int index, bool removed)
 {
@@ -7704,18 +7742,12 @@ void SonobusAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer
         }
     }
     
-    // main bus only
-    
-    for (auto i = mainBusInputChannels; i < mainBusOutputChannels; ++i) {
-        // replicate last input channel (basically only if it's the 2nd channel)
-        if (mainBusInputChannels > 0 && i < 2) {
-            buffer.copyFrom(i, 0, buffer, mainBusInputChannels-1, 0, numSamples);
-        } else {
-            buffer.clear (i, 0, numSamples);            
-        }
-    }
-    
-    // other buses need clearing
+    // In multi-bus VST hosts, process-buffer slots may be shared by auxiliary
+    // inputs and main-bus outputs. Meter the inputs before clearing outputs.
+    inputMeterSource.measureBlock (buffer, 0, numSamples);
+
+    // Clear output channels that are beyond all inputs. These cannot overlap
+    // with an active input channel.
     for (auto i = jmax(mainBusOutputChannels, totalInputChannels); i < jmax(totalOutputChannels, totalInputChannels); ++i) {
         buffer.clear (i, 0, numSamples);            
     }
@@ -7730,10 +7762,6 @@ void SonobusAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer
 
 
     uint64_t t = aoo_osctime_get();
-
-    // meter input pre everything
-    inputMeterSource.measureBlock (buffer, 0, numSamples);
-
 
     inputPostBuffer.clear(0, numSamples);
     if (writingpossible && mRecordInputPreFX) {
@@ -7776,6 +7804,16 @@ void SonobusAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer
         }
 
         destch += mInputChannelGroups[i].params.numChannels;
+    }
+
+    // Main bus output channels beyond the main input bus may alias auxiliary
+    // input channels in a multi-bus host buffer. Clear them only after all
+    // inputs have been copied into inputPostBuffer for patchbay routing.
+    for (auto i = mainBusInputChannels; i < mainBusOutputChannels; ++i) {
+        if (mainBusInputChannels > 0 && i < 2)
+            buffer.copyFrom(i, 0, buffer, mainBusInputChannels - 1, 0, numSamples);
+        else
+            buffer.clear(i, 0, numSamples);
     }
 
 
@@ -8910,6 +8948,24 @@ void SonobusAudioProcessor::getStateInformationWithOptions(MemoryBlock& destData
     ValueTree patchbayTree("PatchbayState");
     patchbayTree.setProperty("sendRoutesCustomized", mPatchbaySendRoutesCustomized.load(std::memory_order_relaxed), nullptr);
 
+    {
+        const ScopedLock lock(mPatchbayLabelsLock);
+        for (int channel = 0; channel < MAX_CHANNELS; ++channel) {
+            if (mPatchbayInputLabels[channel].isNotEmpty()) {
+                ValueTree label("InputLabel");
+                label.setProperty("channel", channel, nullptr);
+                label.setProperty("name", mPatchbayInputLabels[channel], nullptr);
+                patchbayTree.appendChild(label, nullptr);
+            }
+            if (mPatchbayOutputLabels[channel].isNotEmpty()) {
+                ValueTree label("OutputLabel");
+                label.setProperty("channel", channel, nullptr);
+                label.setProperty("name", mPatchbayOutputLabels[channel], nullptr);
+                patchbayTree.appendChild(label, nullptr);
+            }
+        }
+    }
+
     for (int input = 0; input < MAX_CHANNELS; ++input) {
         const float inputGain = mPatchbaySendInputGains[input].load(std::memory_order_relaxed);
         const float outputGain = mPatchbaySendOutputGains[input].load(std::memory_order_relaxed);
@@ -9052,6 +9108,14 @@ void SonobusAudioProcessor::setStateInformationWithOptions (const void* data, in
             }
         }
 
+        {
+            const ScopedLock lock(mPatchbayLabelsLock);
+            for (int channel = 0; channel < MAX_CHANNELS; ++channel) {
+                mPatchbayInputLabels[channel].clear();
+                mPatchbayOutputLabels[channel].clear();
+            }
+        }
+
         ValueTree patchbayTree = tree.getChildWithName("PatchbayState");
         if (patchbayTree.isValid()) {
             mPatchbaySendRoutesCustomized.store(patchbayTree.getProperty("sendRoutesCustomized", false), std::memory_order_relaxed);
@@ -9064,8 +9128,13 @@ void SonobusAudioProcessor::setStateInformationWithOptions (const void* data, in
                 const int output = (int)child.getProperty("output", -1);
                 const int peer = (int)child.getProperty("peer", -1);
                 const float value = (float)child.getProperty("value", 1.0f);
+                const String name = child.getProperty("name", String());
 
-                if (type == "SendRoute" && input >= 0 && input < MAX_CHANNELS && stream >= 0 && stream < MAX_CHANNELS) {
+                if (type == "InputLabel" && channel >= 0 && channel < MAX_CHANNELS) {
+                    setPatchbayInputLabel(channel, name);
+                } else if (type == "OutputLabel" && channel >= 0 && channel < MAX_CHANNELS) {
+                    setPatchbayOutputLabel(channel, name);
+                } else if (type == "SendRoute" && input >= 0 && input < MAX_CHANNELS && stream >= 0 && stream < MAX_CHANNELS) {
                     mPatchbaySendRoutes[input][stream].store(true, std::memory_order_relaxed);
                 } else if (type == "SendInputGain" && channel >= 0 && channel < MAX_CHANNELS) {
                     mPatchbaySendInputGains[channel].store(clampPatchbayGain(value), std::memory_order_relaxed);
