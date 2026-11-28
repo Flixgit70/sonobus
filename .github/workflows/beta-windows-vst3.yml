@@ -22,7 +22,7 @@ permissions:
 jobs:
   macos:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.windows_only != true }}
-    runs-on: macos-15-intel
+    runs-on: macos-15
     steps:
       - name: Check out source
         uses: actions/checkout@v4
