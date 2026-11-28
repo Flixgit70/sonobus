@@ -803,13 +803,21 @@ mState (*this, &mUndoManager, "SonoBusAoO",
     mDefaultAudioFormatParam = mState.getParameter(paramDefaultSendQual);
 
     const bool isplugin = !JUCEApplicationBase::isStandaloneApp();
+#if defined(SONOBUS_STREAMER_VARIANT) && SONOBUS_STREAMER_VARIANT
+    // The Streamer variant never locally monitors its own input.
+    mDry = 0.0;
+#else
     if (isplugin) {
         // default dry to 1.0 if plugin
         mDry = 1.0;
+    } else {
+        mDry = 0.0;
+    }
+#endif
+    if (isplugin) {
         mSendChannels = 0; // match inputs default for plugin
         mSyncMetToHost = true;
     } else {
-        mDry = 0.0;
         mSyncMetToHost = false;
     }
 
@@ -4761,6 +4769,12 @@ void SonobusAudioProcessor::setPatchbayOutputLabel(int channel, const String& la
     updateHostDisplay();
 }
 
+void SonobusAudioProcessor::setPatchbayShowUserLabels(bool showUserLabels)
+{
+    mPatchbayShowUserLabels.store(showUserLabels, std::memory_order_relaxed);
+    updateHostDisplay();
+}
+
 
 void SonobusAudioProcessor::adjustRemoteSendMatrix(int index, bool removed)
 {
@@ -6820,7 +6834,11 @@ void SonobusAudioProcessor::applyLayoutFormatToPeer(RemotePeer * remote, const V
 void SonobusAudioProcessor::parameterChanged (const String &parameterID, float newValue)
 {
     if (parameterID == paramDry) {
+#if defined(SONOBUS_STREAMER_VARIANT) && SONOBUS_STREAMER_VARIANT
+        mDry = 0.0f;
+#else
         mDry = newValue;
+#endif
     }
     else if (parameterID == paramInGain) {
         //mInGain = newValue; // NO LONGER USE GLOBAL mInGain
@@ -7653,6 +7671,9 @@ void SonobusAudioProcessor::processBlock (AudioBuffer<float>& buffer, MidiBuffer
 
     float inGain = mInGain.get();
     float drynow = mDry.get(); // DB_CO(dry_level);
+#if defined(SONOBUS_STREAMER_VARIANT) && SONOBUS_STREAMER_VARIANT
+    drynow = 0.0f;
+#endif
     float wetnow = mWet.get(); // DB_CO(wet_level);
     float inmonMonoPan = mInMonMonoPan.get();
     float inmonPan1 = mInMonPan1.get();
@@ -8947,6 +8968,7 @@ void SonobusAudioProcessor::getStateInformationWithOptions(MemoryBlock& destData
     // explicitly in the processor state used by plugin hosts and presets.
     ValueTree patchbayTree("PatchbayState");
     patchbayTree.setProperty("sendRoutesCustomized", mPatchbaySendRoutesCustomized.load(std::memory_order_relaxed), nullptr);
+    patchbayTree.setProperty("showUserLabels", mPatchbayShowUserLabels.load(std::memory_order_relaxed), nullptr);
 
     {
         const ScopedLock lock(mPatchbayLabelsLock);
@@ -9048,6 +9070,12 @@ void SonobusAudioProcessor::getStateInformationWithOptions(MemoryBlock& destData
         }
     }
 
+    // copyState() may already contain PatchbayState restored from an earlier
+    // host/preset load. Replace it so each serialized state has one current
+    // snapshot; otherwise getChildWithName() can pick an older matrix on load.
+    const auto previousPatchbayTree = tempstate.getChildWithName("PatchbayState");
+    if (previousPatchbayTree.isValid())
+        tempstate.removeChild(previousPatchbayTree, nullptr);
     tempstate.addChild(patchbayTree, -1, nullptr);
 
     if (xmlformat) {
@@ -9082,7 +9110,7 @@ void SonobusAudioProcessor::setStateInformationWithOptions (const void* data, in
     }
 
     if (tree.isValid()) {
-        mState.state = tree;
+        mState.replaceState(tree);
 
         // Start with a clean default matrix so loading an older preset (which
         // has no PatchbayState node) cannot accidentally retain another
@@ -9116,9 +9144,11 @@ void SonobusAudioProcessor::setStateInformationWithOptions (const void* data, in
             }
         }
 
+        mPatchbayShowUserLabels.store(true, std::memory_order_relaxed);
         ValueTree patchbayTree = tree.getChildWithName("PatchbayState");
         if (patchbayTree.isValid()) {
             mPatchbaySendRoutesCustomized.store(patchbayTree.getProperty("sendRoutesCustomized", false), std::memory_order_relaxed);
+            mPatchbayShowUserLabels.store(patchbayTree.getProperty("showUserLabels", true), std::memory_order_relaxed);
 
             for (auto child : patchbayTree) {
                 const auto type = child.getType().toString();
@@ -9308,14 +9338,7 @@ void SonobusAudioProcessor::setStateInformationWithOptions (const void* data, in
             loadPeerCacheFromState();
         }
         
-        // don't recover the metronome enable state, always default it to off
-        mState.getParameter(paramMetEnabled)->setValueNotifyingHost(0.0f);
-
-        // don't recover the recv mute either (actually recover it after all)
-        //mState.getParameter(paramMainRecvMute)->setValueNotifyingHost(0.0f);
-
-        // don't recover main solo
-        mState.getParameter(paramMainMonitorSolo)->setValueNotifyingHost(0.0f);
+        // The host state is authoritative: restore every APVTS parameter as saved.
         
         if (mFreshInit) {
             // only do initial auto reconnect on the first state restore

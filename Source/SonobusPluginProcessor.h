@@ -662,6 +662,8 @@ public:
     void setPatchbayInputLabel(int channel, const String& label);
     String getPatchbayOutputLabel(int channel) const;
     void setPatchbayOutputLabel(int channel, const String& label);
+    bool getPatchbayShowUserLabels() const { return mPatchbayShowUserLabels.load(std::memory_order_relaxed); }
+    void setPatchbayShowUserLabels(bool showUserLabels);
 
     int getActiveSendChannelCount() const { return mActiveSendChannels; }
 
@@ -1193,6 +1195,7 @@ private:
     std::atomic<bool> mPatchbayReceiveRoutes[MAX_PEERS][MAX_CHANNELS][MAX_CHANNELS] {};
     std::atomic<bool> mPatchbayReceiveRoutesInitialized[MAX_PEERS] {};
     std::atomic<bool> mPatchbaySendRoutesCustomized { false };
+    std::atomic<bool> mPatchbayShowUserLabels { true };
     std::atomic<float> mPatchbaySendInputGains[MAX_CHANNELS];
     std::atomic<float> mPatchbaySendOutputGains[MAX_CHANNELS];
     std::atomic<float> mPatchbaySendRouteGains[MAX_CHANNELS][MAX_CHANNELS];

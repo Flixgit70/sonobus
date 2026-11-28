@@ -62,13 +62,15 @@ public:
         sendButton.setTooltip(TRANS("Click an input channel name to edit it; clear the name to restore its default."));
         receiveButton.setTooltip(TRANS("Click an output channel name to edit it; clear the name to restore its default."));
         clearRoutesButton.setButtonText(TRANS("Clear all routes"));
-        labelModeButton.setButtonText(TRANS("User labels"));
+        showUserLabels = processor.getPatchbayShowUserLabels();
+        labelModeButton.setButtonText(showUserLabels ? TRANS("User labels") : TRANS("Default labels"));
         labelModeButton.setTooltip(TRANS("Switch between default channel names and your custom labels"));
         sendButton.onClick = [this] { sendMode = true; updateGridLayout(); };
         receiveButton.onClick = [this] { sendMode = false; refreshReceiveRows(); updateGridLayout(); };
         clearRoutesButton.onClick = [this] { processor.clearPatchbayRoutes(); repaint(); };
         labelModeButton.onClick = [this] {
             showUserLabels = !showUserLabels;
+            processor.setPatchbayShowUserLabels(showUserLabels);
             labelModeButton.setButtonText(showUserLabels ? TRANS("User labels") : TRANS("Default labels"));
             repaint();
         };
@@ -1461,7 +1463,8 @@ SonobusAudioProcessorEditor::SonobusAudioProcessorEditor (SonobusAudioProcessor&
         mTopLevelContainer->addAndMakeVisible(mPeerLayoutMinimalButton.get());
 
 
-    mTopLevelContainer->addAndMakeVisible(mDrySlider.get());
+    if (!streamerMode)
+        mTopLevelContainer->addAndMakeVisible(mDrySlider.get());
     mTopLevelContainer->addAndMakeVisible(mOutGainSlider.get());
     //mTopLevelContainer->addAndMakeVisible(mInGainSlider.get());
     mTopLevelContainer->addAndMakeVisible(mMainMuteButton.get());
@@ -1546,7 +1549,8 @@ SonobusAudioProcessorEditor::SonobusAudioProcessorEditor (SonobusAudioProcessor&
 
 
     //mTopLevelContainer->addAndMakeVisible(mInGainLabel.get());
-    mTopLevelContainer->addAndMakeVisible(mDryLabel.get());
+    if (!streamerMode)
+        mTopLevelContainer->addAndMakeVisible(mDryLabel.get());
     mTopLevelContainer->addAndMakeVisible(mOutGainLabel.get());
     mTopLevelContainer->addAndMakeVisible(inputMeter.get());
     mTopLevelContainer->addAndMakeVisible(outputMeter.get());
@@ -5027,8 +5031,10 @@ void SonobusAudioProcessorEditor::updateLayout()
 
     inputRightBox.items.clear();
     inputRightBox.flexDirection = FlexBox::Direction::column;
-    inputRightBox.items.add(FlexItem(minSliderWidth, minitemheight, dryBox).withMargin(0).withFlex(1)); //.withMaxWidth(isNarrow ? 160 : 120));
-    inputRightBox.items.add(FlexItem(4, 4).withMargin(0).withFlex(0));
+    if (!streamerMode) {
+        inputRightBox.items.add(FlexItem(minSliderWidth, minitemheight, dryBox).withMargin(0).withFlex(1)); //.withMaxWidth(isNarrow ? 160 : 120));
+        inputRightBox.items.add(FlexItem(4, 4).withMargin(0).withFlex(0));
+    }
     inputRightBox.items.add(FlexItem(2*mutew + 10, minitemheight, inputButtonBox).withMargin(0).withFlex(1)); //.withMaxWidth(maxPannerWidth));
 
     inputMainBox.items.clear();

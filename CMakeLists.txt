@@ -642,6 +642,31 @@ sono_add_custom_plugin_target(SonoBus SonoBus "${FormatsToBuild}" FALSE "NBus" "
 # It deliberately shares SonoBus' AOO protocol, codecs and stream behavior.
 sono_add_custom_plugin_target(SonoBusStreamer "SonoBus Streamer" "${FormatsToBuild}" FALSE "Stmr" "com.Sonosaurus.SonoBus.Streamer" TRUE)
 
+option(SONOBUS_BUILD_STATE_TESTS "Build host-state serialization round-trip tests" OFF)
+if (SONOBUS_BUILD_STATE_TESTS)
+    enable_testing()
+
+    function(add_sonobus_state_roundtrip_test test_name plugin_target)
+        add_executable(${test_name} tests/SonobusStateRoundTripTests.cpp)
+        target_include_directories(${test_name} PRIVATE
+            Source
+            deps
+            deps/juce/modules
+            deps/ff_meters
+            deps/aoo/lib
+            deps/aoo/deps
+            deps/mac/include
+            "${CMAKE_CURRENT_BINARY_DIR}/${plugin_target}_artefacts/JuceLibraryCode"
+            "${CMAKE_CURRENT_BINARY_DIR}/juce_binarydata_${plugin_target}_SBData/JuceLibraryCode")
+        target_compile_features(${test_name} PRIVATE cxx_std_17)
+        target_link_libraries(${test_name} PRIVATE ${plugin_target})
+        add_test(NAME ${test_name} COMMAND ${test_name})
+    endfunction()
+
+    add_sonobus_state_roundtrip_test(SonoBusStateRoundTripTests SonoBus)
+    add_sonobus_state_roundtrip_test(SonoBusStreamerStateRoundTripTests SonoBusStreamer)
+endif()
+
 # Mobile targets
 #sono_add_custom_plugin_target(SonoBusMobile "AUv3 Standalone" FALSE "NBus")
 
