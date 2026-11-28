@@ -7233,6 +7233,35 @@ void SonobusAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBloc
     //mInputChannelGroupCount = jmin(inchannels, mInputChannelGroupCount);
     mInputChannelGroupCount = jmin(MAX_CHANGROUPS, mInputChannelGroupCount);
 
+    // The patchbay meters every active hardware input, while the audio sent to
+    // the stream is assembled from input channel groups. Older/default layouts
+    // can contain only the main stereo bus, leaving auxiliary inputs visible
+    // in the meters but absent from the stream. Add a mono group for each active
+    // hardware input that is not already covered by a group.
+    for (int hardwareChannel = 0;
+         hardwareChannel < inchannels && hardwareChannel < MAX_CHANNELS;
+         ++hardwareChannel) {
+        bool isCovered = false;
+        for (int group = 0; group < mInputChannelGroupCount; ++group) {
+            const auto & params = mInputChannelGroups[group].params;
+            if (hardwareChannel >= params.chanStartIndex
+                && hardwareChannel < params.chanStartIndex + params.numChannels) {
+                isCovered = true;
+                break;
+            }
+        }
+
+        if (!isCovered && mInputChannelGroupCount < MAX_CHANGROUPS) {
+            auto & params = mInputChannelGroups[mInputChannelGroupCount].params;
+            params.chanStartIndex = hardwareChannel;
+            params.numChannels = 1;
+            params.monDestStartIndex = 0;
+            params.monDestChannels = jmax(1, jmin(2, outchannels));
+            mInputChannelGroups[mInputChannelGroupCount].commitMonitorDelayParams();
+            ++mInputChannelGroupCount;
+        }
+    }
+
 
     for (int i=0; /*i < mInputChannelGroupCount && */ i < MAX_CHANGROUPS; ++i) {
         mInputChannelGroups[i].init(sampleRate);
