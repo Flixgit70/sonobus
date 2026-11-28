@@ -27,18 +27,18 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Configure universal build
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUniversalBinary=ON
+      - name: Configure Apple Silicon build
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUniversalBinary=OFF -DCMAKE_OSX_ARCHITECTURES=arm64
 
       - name: Build macOS products
         run: cmake --build build --config Release --target SonoBus_VST3 SonoBus_Standalone SonoBusStreamer_VST3 SonoBusStreamer_Standalone --parallel 4
 
       - name: Package macOS products
         run: |
-          ditto -c -k --sequesterRsrc --keepParent "build/SonoBus_artefacts/Release/VST3/SonoBus.vst3" "SonoBus-macOS-Universal-VST3.zip"
-          ditto -c -k --sequesterRsrc --keepParent "build/SonoBus_artefacts/Release/Standalone/SonoBus.app" "SonoBus-macOS-Universal-Standalone.zip"
-          ditto -c -k --sequesterRsrc --keepParent "build/SonoBusStreamer_artefacts/Release/VST3/SonoBus Streamer.vst3" "SonoBusStreamer-macOS-Universal-VST3.zip"
-          ditto -c -k --sequesterRsrc --keepParent "build/SonoBusStreamer_artefacts/Release/Standalone/SonoBus Streamer.app" "SonoBusStreamer-macOS-Universal-Standalone.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/SonoBus_artefacts/Release/VST3/SonoBus.vst3" "SonoBus-macOS-ARM64-VST3.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/SonoBus_artefacts/Release/Standalone/SonoBus.app" "SonoBus-macOS-ARM64-Standalone.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/SonoBusStreamer_artefacts/Release/VST3/SonoBus Streamer.vst3" "SonoBusStreamer-macOS-ARM64-VST3.zip"
+          ditto -c -k --sequesterRsrc --keepParent "build/SonoBusStreamer_artefacts/Release/Standalone/SonoBus Streamer.app" "SonoBusStreamer-macOS-ARM64-Standalone.zip"
 
       - name: Publish macOS assets
         uses: softprops/action-gh-release@v2
@@ -52,17 +52,17 @@ jobs:
             - The Stream to Outputs patchbay now lets you select the incoming participant stream explicitly and shows which stream is being patched.
             - Fixes patchbay routing from additional VST3 inputs when host input and output buses share process-buffer channels.
             - Lets you assign and save custom labels for interface inputs and outputs in the patchbay.
-            - Full beta runs include universal macOS VST3 and Standalone builds; Windows-only runs skip macOS.
+            - Full beta runs include Apple Silicon ARM64 macOS VST3 and Standalone builds; Windows-only runs skip macOS.
             - Windows x64 VST3 builds are attached after the Windows workflow finishes.
             - The iOS Streamer product is not included in this beta.
           prerelease: true
           overwrite_files: true
           fail_on_unmatched_files: true
           files: |
-            SonoBus-macOS-Universal-VST3.zip
-            SonoBus-macOS-Universal-Standalone.zip
-            SonoBusStreamer-macOS-Universal-VST3.zip
-            SonoBusStreamer-macOS-Universal-Standalone.zip
+            SonoBus-macOS-ARM64-VST3.zip
+            SonoBus-macOS-ARM64-Standalone.zip
+            SonoBusStreamer-macOS-ARM64-VST3.zip
+            SonoBusStreamer-macOS-ARM64-Standalone.zip
 
   windows-vst3:
     needs: macos

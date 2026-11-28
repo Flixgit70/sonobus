@@ -62,9 +62,16 @@ public:
         sendButton.setTooltip(TRANS("Click an input channel name to edit it; clear the name to restore its default."));
         receiveButton.setTooltip(TRANS("Click an output channel name to edit it; clear the name to restore its default."));
         clearRoutesButton.setButtonText(TRANS("Clear all routes"));
+        labelModeButton.setButtonText(TRANS("User labels"));
+        labelModeButton.setTooltip(TRANS("Switch between default channel names and your custom labels"));
         sendButton.onClick = [this] { sendMode = true; updateGridLayout(); };
         receiveButton.onClick = [this] { sendMode = false; refreshReceiveRows(); updateGridLayout(); };
         clearRoutesButton.onClick = [this] { processor.clearPatchbayRoutes(); repaint(); };
+        labelModeButton.onClick = [this] {
+            showUserLabels = !showUserLabels;
+            labelModeButton.setButtonText(showUserLabels ? TRANS("User labels") : TRANS("Default labels"));
+            repaint();
+        };
         receiveSourceSelector.setTextWhenNothingSelected(TRANS("No remote streams"));
         receiveSourceSelector.setTooltip(TRANS("Select the participant stream routed to the interface outputs"));
         receiveSourceSelector.onChange = [this] {
@@ -84,6 +91,7 @@ public:
         addAndMakeVisible(sendButton);
         addAndMakeVisible(receiveButton);
         addAndMakeVisible(clearRoutesButton);
+        addAndMakeVisible(labelModeButton);
         addAndMakeVisible(receiveSourceSelector);
         addAndMakeVisible(streamSizeMinus);
         addAndMakeVisible(streamSizePlus);
@@ -104,7 +112,7 @@ public:
         refreshReceiveRows();
         const int rows = getRowCount();
         const int columns = getColumnCount();
-        contentWidth = jmax(650, labelWidth + columns * cellWidth + 12);
+        contentWidth = jmax(730, labelWidth + columns * cellWidth + 12);
         contentHeight = headerHeight + rows * rowHeight + 12;
         streamSizeMinus.setEnabled(processor.getPatchbaySendChannelCount() > 1);
         streamSizePlus.setEnabled(processor.getPatchbaySendChannelCount() < MAX_CHANNELS);
@@ -154,7 +162,7 @@ public:
             if (sendMode) {
                 destinationLabel = TRANS("Stream") + String(" ") + String(column + 1);
             } else {
-                destinationLabel = processor.getPatchbayOutputLabel(column);
+                destinationLabel = showUserLabels ? processor.getPatchbayOutputLabel(column) : String();
                 if (destinationLabel.isEmpty())
                     destinationLabel = TRANS("Out") + String(" ") + String(column + 1);
             }
@@ -255,6 +263,7 @@ public:
         sendButton.setBounds(12, 8, 180, 34);
         receiveButton.setBounds(200, 8, 200, 34);
         clearRoutesButton.setBounds(410, 8, 170, 34);
+        labelModeButton.setBounds(590, 8, 128, 34);
         receiveSourceSelector.setBounds(12, 98, labelWidth - 24, 28);
         receiveSourceSelector.setVisible(!sendMode);
         streamSizeMinus.setBounds(labelWidth + 134, 50, 28, 28);
@@ -267,12 +276,13 @@ public:
 
 private:
     static constexpr int labelWidth = 190, cellWidth = 52, rowHeight = 40, headerHeight = 150;
-    TextButton sendButton, receiveButton, clearRoutesButton;
+    TextButton sendButton, receiveButton, clearRoutesButton, labelModeButton;
     ComboBox receiveSourceSelector;
     TextButton streamSizeMinus, streamSizePlus;
     TextEditor labelEditor;
     SonobusAudioProcessor& processor;
     bool sendMode = true;
+    bool showUserLabels = true;
     bool updatingSourceSelector = false;
     String selectedSourceKey;
     int contentWidth = 650, contentHeight = 400;
@@ -400,7 +410,11 @@ private:
 
     String getRowName(int row)
     {
-        if (sendMode) return String::formatted("Input %d", row + 1);
+        if (sendMode) {
+            const String defaultName = TRANS("Input") + String(" ") + String(row + 1);
+            const String userLabel = showUserLabels ? processor.getPatchbayInputLabel(row) : String();
+            return userLabel.isNotEmpty() ? userLabel : defaultName;
+        }
         const int peer = rowPeers[row];
         return processor.getRemotePeerUserName(peer) + "  -  " + String::formatted("Ch %d", rowChannels[row] + 1);
     }
