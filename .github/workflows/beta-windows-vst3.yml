@@ -4,13 +4,14 @@ on:
   push:
     tags:
       - 'v*-beta*'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   macos:
-    runs-on: macos-14
+    runs-on: macos-15-intel
     steps:
       - name: Check out source
         uses: actions/checkout@v4
