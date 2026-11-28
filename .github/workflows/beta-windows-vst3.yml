@@ -5,12 +5,23 @@ on:
     tags:
       - 'v*-beta*'
   workflow_dispatch:
+    inputs:
+      windows_only:
+        description: Build and publish only the Windows VST3 products
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: Existing beta tag to receive the Windows assets (optional)
+        required: false
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   macos:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.windows_only != true }}
     runs-on: macos-15-intel
     steps:
       - name: Check out source
@@ -32,7 +43,7 @@ jobs:
       - name: Publish macOS assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           name: SonoBus 1.7.2 Patchbay Beta 5
           body: |
             SonoBus 1.7.2 Patchbay Beta 5
@@ -41,7 +52,7 @@ jobs:
             - The Stream to Outputs patchbay now lets you select the incoming participant stream explicitly and shows which stream is being patched.
             - Fixes patchbay routing from additional VST3 inputs when host input and output buses share process-buffer channels.
             - Lets you assign and save custom labels for interface inputs and outputs in the patchbay.
-            - Includes universal macOS VST3 and Standalone builds for SonoBus and SonoBus Streamer.
+            - Full beta runs include universal macOS VST3 and Standalone builds; Windows-only runs skip macOS.
             - Windows x64 VST3 builds are attached after the Windows workflow finishes.
             - The iOS Streamer product is not included in this beta.
           prerelease: true
@@ -55,6 +66,7 @@ jobs:
 
   windows-vst3:
     needs: macos
+    if: ${{ always() && (needs.macos.result == 'success' || needs.macos.result == 'skipped') }}
     runs-on: windows-2022
     steps:
       - name: Check out source
@@ -78,7 +90,15 @@ jobs:
       - name: Publish Windows assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          name: SonoBus 1.7.2 Patchbay Beta 5
+          body: |
+            SonoBus 1.7.2 Patchbay Beta 5
+
+            - Fixes patchbay routing from additional VST3 inputs when host input and output buses share process-buffer channels.
+            - Lets you assign and save custom labels for interface inputs and outputs in the patchbay.
+            - Includes Windows x64 VST3 builds for SonoBus and SonoBus Streamer.
+            - This Windows-only build skips macOS products; the prior beta remains available for macOS.
           prerelease: true
           overwrite_files: true
           fail_on_unmatched_files: true
